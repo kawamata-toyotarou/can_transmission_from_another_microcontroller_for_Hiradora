@@ -21,12 +21,25 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef struct __attribute__((packed)) {
+  float speed_target;         /* byte0-3 */
+  uint8_t pid_mode;           /* byte4 */
+  uint8_t control_motor_mode; /* byte5 */
+  uint8_t reserved[2];        /* byte6-7 */
+} can_motor_cmd_t;
 
+#define CAN_MOTOR_CMD_BASE_ID 0x100u
+
+volatile float goal_speed_target = 600;
+volatile uint8_t goal_pid_mode = 0;
+volatile uint8_t goal_control_motor_mode = 0;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -48,6 +61,8 @@ TIM_HandleTypeDef htim6;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+volatile uint32_t tx_success_count = 0;
+volatile uint32_t tx_fail_count = 0;
 
 /* USER CODE END PV */
 
@@ -64,7 +79,61 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void FDCAN3_ConfigAndStart(void)   // ← 関数名も分かりやすく変更（任意）
+{
+    FDCAN_FilterTypeDef sFilterConfig = {0};
 
+    /* masterは基本受信しないので、フィルタは全拒否のグローバル設定だけでOK */
+    HAL_FDCAN_ConfigGlobalFilter(&hfdcan3, FDCAN_REJECT, FDCAN_REJECT,
+                                  FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE);
+
+    if (HAL_FDCAN_Start(&hfdcan3) != HAL_OK)   // ← hfdcan1 → hfdcan3
+    {
+        Error_Handler();
+    }
+}
+
+HAL_StatusTypeDef send_motor_cmd(uint8_t motor_id, float speed_target,
+                                  uint8_t pid_mode, uint8_t control_mode)
+{
+    FDCAN_TxHeaderTypeDef TxHeader;
+    can_motor_cmd_t cmd;
+
+    cmd.speed_target = speed_target;
+    cmd.pid_mode = pid_mode;
+    cmd.control_motor_mode = control_mode;
+    cmd.reserved[0] = 0;
+    cmd.reserved[1] = 0;
+
+    TxHeader.Identifier = CAN_MOTOR_CMD_BASE_ID + motor_id;
+    TxHeader.IdType = FDCAN_STANDARD_ID;
+    TxHeader.TxFrameType = FDCAN_DATA_FRAME;
+    TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+    TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+    TxHeader.BitRateSwitch = FDCAN_BRS_OFF;
+    TxHeader.FDFormat = FDCAN_CLASSIC_CAN;
+    TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+    TxHeader.MessageMarker = 0;
+
+    return HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan3, &TxHeader, (uint8_t*)&cmd);  // ← hfdcan1 → hfdcan3
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    
+    if (htim->Instance == TIM6)
+    {
+        HAL_StatusTypeDef st = send_motor_cmd(0, goal_speed_target, goal_pid_mode, goal_control_motor_mode);
+        if (st == HAL_OK) { tx_success_count++; } else { tx_fail_count++; }
+    }
+}
+
+int _write(int file, char *ptr, int len)
+{
+  (void)file;
+  HAL_UART_Transmit(&huart2, (uint8_t*)ptr, (uint16_t)len, HAL_MAX_DELAY);
+  return len;
+}
 /* USER CODE END 0 */
 
 /**
@@ -101,7 +170,10 @@ int main(void)
   MX_TIM6_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  FDCAN3_ConfigAndStart();   // ← FDCAN1_ConfigAndStart() から変更
+  HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
+  HAL_TIM_Base_Start_IT(&htim6);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -111,6 +183,17 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    FDCAN_ProtocolStatusTypeDef pstatus;
+    FDCAN_ErrorCountersTypeDef  ecounters;
+    HAL_FDCAN_GetProtocolStatus(&hfdcan3, &pstatus);
+    HAL_FDCAN_GetErrorCounters(&hfdcan3, &ecounters);
+
+    printf("tx_ok=%lu tx_fail=%lu BusOff=%d ErrPassive=%d TEC=%lu REC=%lu\r\n",
+           tx_success_count, tx_fail_count,
+           pstatus.BusOff, pstatus.ErrorPassive,
+           (unsigned long)ecounters.TxErrorCnt, (unsigned long)ecounters.RxErrorCnt);
+
+    HAL_Delay(1);
   }
   /* USER CODE END 3 */
 }
@@ -178,16 +261,16 @@ static void MX_FDCAN1_Init(void)
   /* USER CODE END FDCAN1_Init 1 */
   hfdcan1.Instance = FDCAN1;
   hfdcan1.Init.ClockDivider = FDCAN_CLOCK_DIV1;
-  hfdcan1.Init.FrameFormat = FDCAN_FRAME_FD_BRS;
+  hfdcan1.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
   hfdcan1.Init.Mode = FDCAN_MODE_NORMAL;
-  hfdcan1.Init.AutoRetransmission = DISABLE;
+  hfdcan1.Init.AutoRetransmission = ENABLE;
   hfdcan1.Init.TransmitPause = DISABLE;
   hfdcan1.Init.ProtocolException = DISABLE;
   hfdcan1.Init.NominalPrescaler = 4;
   hfdcan1.Init.NominalSyncJumpWidth = 1;
   hfdcan1.Init.NominalTimeSeg1 = 15;
   hfdcan1.Init.NominalTimeSeg2 = 4;
-  hfdcan1.Init.DataPrescaler = 2;
+  hfdcan1.Init.DataPrescaler = 1;
   hfdcan1.Init.DataSyncJumpWidth = 1;
   hfdcan1.Init.DataTimeSeg1 = 15;
   hfdcan1.Init.DataTimeSeg2 = 4;
@@ -221,16 +304,16 @@ static void MX_FDCAN3_Init(void)
   /* USER CODE END FDCAN3_Init 1 */
   hfdcan3.Instance = FDCAN3;
   hfdcan3.Init.ClockDivider = FDCAN_CLOCK_DIV1;
-  hfdcan3.Init.FrameFormat = FDCAN_FRAME_FD_BRS;
+  hfdcan3.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
   hfdcan3.Init.Mode = FDCAN_MODE_NORMAL;
-  hfdcan3.Init.AutoRetransmission = DISABLE;
+  hfdcan3.Init.AutoRetransmission = ENABLE;
   hfdcan3.Init.TransmitPause = DISABLE;
   hfdcan3.Init.ProtocolException = DISABLE;
   hfdcan3.Init.NominalPrescaler = 4;
   hfdcan3.Init.NominalSyncJumpWidth = 1;
   hfdcan3.Init.NominalTimeSeg1 = 15;
   hfdcan3.Init.NominalTimeSeg2 = 4;
-  hfdcan3.Init.DataPrescaler = 2;
+  hfdcan3.Init.DataPrescaler = 1;
   hfdcan3.Init.DataSyncJumpWidth = 1;
   hfdcan3.Init.DataTimeSeg1 = 15;
   hfdcan3.Init.DataTimeSeg2 = 4;
