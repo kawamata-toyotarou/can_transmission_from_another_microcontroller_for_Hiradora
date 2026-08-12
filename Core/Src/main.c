@@ -37,7 +37,7 @@ typedef struct __attribute__((packed)) {
 
 #define CAN_MOTOR_CMD_BASE_ID 0x100u
 
-volatile float goal_speed_target = 600;
+volatile float goal_speed_target = 300;
 volatile uint8_t goal_pid_mode = 0;
 volatile uint8_t goal_control_motor_mode = 0;
 /* USER CODE END PTD */
