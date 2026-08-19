@@ -30,8 +30,8 @@
 /* USER CODE BEGIN PTD */
 typedef struct __attribute__((packed)) {
   float speed_target;         /* byte0-3 */
-  uint8_t pid_mode;           /* byte4 */
-  uint8_t control_motor_mode; /* byte5 */
+  uint8_t pid_mode;           /* byte4 */   //0ならloacte_pid  1ならspeed_pid
+  uint8_t control_motor_mode; /* byte5 */   //0なら速度制御     1なら電流制御
   uint8_t reserved[2];        /* byte6-7 */
 } can_motor_cmd_t;
 
@@ -40,6 +40,7 @@ typedef struct __attribute__((packed)) {
 volatile float goal_speed_target = 300;
 volatile uint8_t goal_pid_mode = 0;
 volatile uint8_t goal_control_motor_mode = 0;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -79,15 +80,15 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void FDCAN3_ConfigAndStart(void)   // ← 関数名も分かりやすく変更（任意）
+static void FDCAN3_ConfigAndStart(void)  
 {
     FDCAN_FilterTypeDef sFilterConfig = {0};
 
-    /* masterは基本受信しないので、フィルタは全拒否のグローバル設定だけでOK */
+    /* 基本的に送信用のリポジトリなのでフィルタは全拒否のグローバル設定 */
     HAL_FDCAN_ConfigGlobalFilter(&hfdcan3, FDCAN_REJECT, FDCAN_REJECT,
                                   FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE);
 
-    if (HAL_FDCAN_Start(&hfdcan3) != HAL_OK)   // ← hfdcan1 → hfdcan3
+    if (HAL_FDCAN_Start(&hfdcan3) != HAL_OK)   //  hfdcan3
     {
         Error_Handler();
     }
@@ -115,7 +116,7 @@ HAL_StatusTypeDef send_motor_cmd(uint8_t motor_id, float speed_target,
     TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
     TxHeader.MessageMarker = 0;
 
-    return HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan3, &TxHeader, (uint8_t*)&cmd);  // ← hfdcan1 → hfdcan3
+    return HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan3, &TxHeader, (uint8_t*)&cmd);  // hfdcan3
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
