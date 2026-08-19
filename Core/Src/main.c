@@ -24,18 +24,21 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 typedef struct __attribute__((packed)) {
-  float speed_target;         /* byte0-3 */
-  uint8_t pid_mode;           /* byte4 */   //0ならloacte_pid  1ならspeed_pid
-  uint8_t control_motor_mode; /* byte5 */   //0なら速度制御     1なら電流制御
-  uint8_t reserved[2];        /* byte6-7 */
-} can_motor_cmd_t;
+    int16_t vx;           /* byte0-1: mm/s (実値[m/s] = 生値 / 1000.0f) */
+    int16_t vy;            /* byte2-3: mm/s (実値[m/s] = 生値 / 1000.0f) */
+    int16_t omega;         /* byte4-5: mrad/s (実値[rad/s] = 生値 / 1000.0f) */
+    uint8_t reserved[2];   /* byte6-7 */
+} can_velocity_cmd_t;
 
-#define CAN_MOTOR_CMD_BASE_ID 0x100u
+#define CAN_VELOCITY_CMD_ID  0x100u
+
+#define CAN_MOTOR_CMD_BASE_ID 0x301u
 
 volatile float goal_speed_target = 300;
 volatile uint8_t goal_pid_mode = 0;
@@ -45,7 +48,21 @@ volatile uint8_t goal_control_motor_mode = 0;
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define WHEEL_RADIUS_M      0.037f;  // ホイール半径[m] ← 実機に合わせて変更
+#define ROBOT_RADIUS_M      0.31f   // 中心からホイールまでの距離[m] ← 実機に合わせて変更
 
+#define WHEEL0_ANGLE_RAD    (0.0f)
+#define WHEEL1_ANGLE_RAD    (2.0f * (float)M_PI / 3.0f)
+#define WHEEL2_ANGLE_RAD    (4.0f * (float)M_PI / 3.0f)
+
+#define MAX_WHEEL_RPM        5000.0f  // doc1/2側のクリップ値と合わせる
+
+volatile float rx_vx    = 0.0f;   /* m/s */
+volatile float rx_vy    = 0.0f;   /* m/s */
+volatile float rx_omega = 0.0f;   /* rad/s */
+volatile uint32_t velocity_rx_count = 0;
+
+volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -75,11 +92,95 @@ static void MX_FDCAN3_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void FDCAN1_ConfigFilterAndStart(void);
+static void compute_wheel_targets(float vx, float vy, float omega);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+static void FDCAN1_ConfigFilterAndStart(void)
+{
+    FDCAN_FilterTypeDef sFilterConfig = {0};
+
+    sFilterConfig.IdType       = FDCAN_STANDARD_ID;
+    sFilterConfig.FilterIndex  = 0;
+    sFilterConfig.FilterType   = FDCAN_FILTER_DUAL;
+    sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+    sFilterConfig.FilterID1    = CAN_VELOCITY_CMD_ID;
+    sFilterConfig.FilterID2    = CAN_VELOCITY_CMD_ID;
+    if (HAL_FDCAN_ConfigFilter(&hfdcan1, &sFilterConfig) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    if (HAL_FDCAN_ConfigGlobalFilter(&hfdcan1, FDCAN_REJECT, FDCAN_REJECT,
+                                      FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    if (HAL_FDCAN_ActivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+/* 3輪オムニの逆運動学: vx,vy[m/s], omega[rad/s] → 各ホイールrpm */
+static void compute_wheel_targets(float vx, float vy, float omega)
+{
+    const float wheel_angle[3] = { WHEEL0_ANGLE_RAD, WHEEL1_ANGLE_RAD, WHEEL2_ANGLE_RAD };
+
+    for (int i = 0; i < 3; i++)
+    {
+        // 接線方向速度成分 + 回転による寄与
+        float v_wheel_mps = -vx * sinf(wheel_angle[i]) + vy * cosf(wheel_angle[i])
+                             + ROBOT_RADIUS_M * omega;
+
+        // m/s → rpm変換: rpm = v / (2*pi*r) * 60
+        float rpm = v_wheel_mps / (2.0f * (float)M_PI * WHEEL_RADIUS_M) * 60.0f;
+
+        if (rpm > MAX_WHEEL_RPM)  rpm = MAX_WHEEL_RPM;
+        if (rpm < -MAX_WHEEL_RPM) rpm = -MAX_WHEEL_RPM;
+
+        wheel_speed_target[i] = rpm;
+    }
+}
+
+void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
+{
+    if (hfdcan->Instance != FDCAN1) return;
+    if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) == 0) return;
+
+    FDCAN_RxHeaderTypeDef RxHeader;
+    uint8_t RxData[8];
+
+    if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &RxHeader, RxData) != HAL_OK)
+    {
+        return;
+    }
+
+    if (RxHeader.IdType != FDCAN_STANDARD_ID) return;
+    if (RxHeader.Identifier != CAN_VELOCITY_CMD_ID) return;
+    if (RxHeader.DataLength != FDCAN_DLC_BYTES_8) return;
+
+    can_velocity_cmd_t cmd;
+    memcpy(&cmd, RxData, sizeof(cmd));
+
+    rx_vx    = (float)cmd.vx    / 1000.0f;
+    rx_vy    = (float)cmd.vy    / 1000.0f;
+    rx_omega = (float)cmd.omega / 1000.0f;
+
+    compute_wheel_targets(rx_vx, rx_vy, rx_omega);
+
+    velocity_rx_count++;
+}
+
 static void FDCAN3_ConfigAndStart(void)  
 {
     FDCAN_FilterTypeDef sFilterConfig = {0};
@@ -121,11 +222,14 @@ HAL_StatusTypeDef send_motor_cmd(uint8_t motor_id, float speed_target,
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-    
     if (htim->Instance == TIM6)
     {
-        HAL_StatusTypeDef st = send_motor_cmd(0, goal_speed_target, goal_pid_mode, goal_control_motor_mode);
-        if (st == HAL_OK) { tx_success_count++; } else { tx_fail_count++; }
+        for (uint8_t i = 0; i < 3; i++)
+        {
+            HAL_StatusTypeDef st = send_motor_cmd(i, wheel_speed_target[i],
+                                                   goal_pid_mode, goal_control_motor_mode);
+            if (st == HAL_OK) { tx_success_count++; } else { tx_fail_count++; }
+        }
     }
 }
 
@@ -172,8 +276,11 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   FDCAN3_ConfigAndStart();   // ← FDCAN1_ConfigAndStart() から変更
+  FDCAN1_ConfigFilterAndStart();
   HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
+  HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, 0, 0); 
+  HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
   HAL_TIM_Base_Start_IT(&htim6);
   /* USER CODE END 2 */
 
@@ -194,7 +301,12 @@ int main(void)
            pstatus.BusOff, pstatus.ErrorPassive,
            (unsigned long)ecounters.TxErrorCnt, (unsigned long)ecounters.RxErrorCnt);
 
-    HAL_Delay(1);
+    printf("tx_ok=%lu tx_fail=%lu vel_rx=%lu vx=%d vy=%d omega=%d w0=%d w1=%d w2=%d\r\n",
+       tx_success_count, tx_fail_count, velocity_rx_count,
+       (int)(rx_vx*1000), (int)(rx_vy*1000), (int)(rx_omega*1000),
+       (int)wheel_speed_target[0], (int)wheel_speed_target[1], (int)wheel_speed_target[2]);
+
+    HAL_Delay(300);
   }
   /* USER CODE END 3 */
 }
