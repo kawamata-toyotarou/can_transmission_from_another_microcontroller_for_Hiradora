@@ -30,11 +30,17 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 typedef struct __attribute__((packed)) {
-    int16_t vx;           /* byte0-1: mm/s (実値[m/s] = 生値 / 1000.0f) */
-    int16_t vy;            /* byte2-3: mm/s (実値[m/s] = 生値 / 1000.0f) */
-    int16_t omega;         /* byte4-5: mrad/s (実値[rad/s] = 生値 / 1000.0f) */
-    uint8_t reserved[2];   /* byte6-7 */
+    float vx;      /* byte0-3: m/s (そのまま) */
+    float vy;      /* byte4-7: m/s (そのまま) */
+    float omega;   /* byte8-11: rad/s (そのまま) */
 } can_velocity_cmd_t;
+
+typedef struct __attribute__((packed)) {
+    float   speed_target;         /* byte0-3 */
+    uint8_t pid_mode;             /* byte4: 0=locate_pid, 1=speed_pid */
+    uint8_t control_motor_mode;   /* byte5: 0=電圧制御, 1=電流制御 */
+    uint8_t reserved[2];          /* byte6-7 */
+} can_motor_cmd_t;
 
 #define CAN_VELOCITY_CMD_ID  0x100u
 
@@ -48,14 +54,14 @@ volatile uint8_t goal_control_motor_mode = 0;
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define WHEEL_RADIUS_M      0.037f;  // ホイール半径[m] ← 実機に合わせて変更
+#define WHEEL_RADIUS_M      0.037f  // ホイール半径[m] ← 実機に合わせて変更
 #define ROBOT_RADIUS_M      0.31f   // 中心からホイールまでの距離[m] ← 実機に合わせて変更
 
-#define WHEEL0_ANGLE_RAD    (0.0f)
-#define WHEEL1_ANGLE_RAD    (2.0f * (float)M_PI / 3.0f)
-#define WHEEL2_ANGLE_RAD    (4.0f * (float)M_PI / 3.0f)
+#define WHEEL0_ANGLE_RAD    (-(float)M_PI / 3.0f)          //  60°  
+#define WHEEL1_ANGLE_RAD    ((float)M_PI / 3.0f)          // -60°  
+#define WHEEL2_ANGLE_RAD    ((float)M_PI)  
 
-#define MAX_WHEEL_RPM        5000.0f  // doc1/2側のクリップ値と合わせる
+#define MAX_WHEEL_RPM 5000.0f  // doc1/2側のクリップ値と合わせる
 
 volatile float rx_vx    = 0.0f;   /* m/s */
 volatile float rx_vy    = 0.0f;   /* m/s */
@@ -158,7 +164,7 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
     if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) == 0) return;
 
     FDCAN_RxHeaderTypeDef RxHeader;
-    uint8_t RxData[8];
+    uint8_t RxData[64];   // CAN FDは最大64byteなのでバッファを拡張
 
     if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &RxHeader, RxData) != HAL_OK)
     {
@@ -167,14 +173,14 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 
     if (RxHeader.IdType != FDCAN_STANDARD_ID) return;
     if (RxHeader.Identifier != CAN_VELOCITY_CMD_ID) return;
-    if (RxHeader.DataLength != FDCAN_DLC_BYTES_8) return;
+    if (RxHeader.DataLength != FDCAN_DLC_BYTES_12) return;   //12byteに変更
 
     can_velocity_cmd_t cmd;
     memcpy(&cmd, RxData, sizeof(cmd));
 
-    rx_vx    = (float)cmd.vx    / 1000.0f;
-    rx_vy    = (float)cmd.vy    / 1000.0f;
-    rx_omega = (float)cmd.omega / 1000.0f;
+    rx_vx    = cmd.vx;      
+    rx_vy    = cmd.vy;
+    rx_omega = cmd.omega;
 
     compute_wheel_targets(rx_vx, rx_vy, rx_omega);
 
@@ -275,13 +281,16 @@ int main(void)
   MX_TIM6_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  FDCAN3_ConfigAndStart();   // ← FDCAN1_ConfigAndStart() から変更
+  FDCAN3_ConfigAndStart();   
   FDCAN1_ConfigFilterAndStart();
   HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
   HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, 0, 0); 
   HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
   HAL_TIM_Base_Start_IT(&htim6);
+
+  /* 試験用 */
+  compute_wheel_targets(0.0f, 0.2f, 0.0f);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -301,12 +310,12 @@ int main(void)
            pstatus.BusOff, pstatus.ErrorPassive,
            (unsigned long)ecounters.TxErrorCnt, (unsigned long)ecounters.RxErrorCnt);
 
-    printf("tx_ok=%lu tx_fail=%lu vel_rx=%lu vx=%d vy=%d omega=%d w0=%d w1=%d w2=%d\r\n",
-       tx_success_count, tx_fail_count, velocity_rx_count,
-       (int)(rx_vx*1000), (int)(rx_vy*1000), (int)(rx_omega*1000),
-       (int)wheel_speed_target[0], (int)wheel_speed_target[1], (int)wheel_speed_target[2]);
+    printf("tx_ok=%lu tx_fail=%lu vel_rx=%lu vx=%.3f vy=%.3f omega=%.3f w0=%d w1=%d w2=%d\r\n",
+   tx_success_count, tx_fail_count, velocity_rx_count,
+   rx_vx, rx_vy, rx_omega,
+   (int)wheel_speed_target[0], (int)wheel_speed_target[1], (int)wheel_speed_target[2]);
 
-    HAL_Delay(300);
+    
   }
   /* USER CODE END 3 */
 }
@@ -374,7 +383,7 @@ static void MX_FDCAN1_Init(void)
   /* USER CODE END FDCAN1_Init 1 */
   hfdcan1.Instance = FDCAN1;
   hfdcan1.Init.ClockDivider = FDCAN_CLOCK_DIV1;
-  hfdcan1.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
+  hfdcan1.Init.FrameFormat = FDCAN_FRAME_FD_BRS;
   hfdcan1.Init.Mode = FDCAN_MODE_NORMAL;
   hfdcan1.Init.AutoRetransmission = ENABLE;
   hfdcan1.Init.TransmitPause = DISABLE;
