@@ -198,7 +198,7 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
     rx_vy    = cmd.vy;
     rx_omega = cmd.omega;
 
-    compute_wheel_targets(rx_vx, rx_vy, rx_omega);
+    compute_wheel_targets(-rx_vx, rx_vy, rx_omega);
 
     velocity_rx_count++;
 }
