@@ -100,10 +100,19 @@ static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static void FDCAN1_ConfigFilterAndStart(void);
 static void compute_wheel_targets(float vx, float vy, float omega);
+static inline float be_bytes_to_float(const uint8_t *p);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+static inline float be_bytes_to_float(const uint8_t *p)
+{
+    union { uint32_t u; float f; } conv;
+    conv.u = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16)
+           | ((uint32_t)p[2] << 8)  | (uint32_t)p[3];
+    return conv.f;
+}
 
 static void FDCAN1_ConfigFilterAndStart(void)
 {
@@ -173,10 +182,17 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 
     if (RxHeader.IdType != FDCAN_STANDARD_ID) return;
     if (RxHeader.Identifier != CAN_VELOCITY_CMD_ID) return;
-    if (RxHeader.DataLength != FDCAN_DLC_BYTES_12) return;   //12byteに変更
-
+    if (RxHeader.FDFormat != FDCAN_FD_CAN ||
+      RxHeader.BitRateSwitch != FDCAN_BRS_ON ||
+      RxHeader.DataLength != FDCAN_DLC_BYTES_12)
+    {
+      return;
+    }
     can_velocity_cmd_t cmd;
-    memcpy(&cmd, RxData, sizeof(cmd));
+    
+    cmd.vx    = be_bytes_to_float(&RxData[0]);
+    cmd.vy    = be_bytes_to_float(&RxData[4]);
+    cmd.omega = be_bytes_to_float(&RxData[8]);
 
     rx_vx    = cmd.vx;      
     rx_vy    = cmd.vy;
@@ -289,8 +305,6 @@ int main(void)
   HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
   HAL_TIM_Base_Start_IT(&htim6);
 
-  /* 試験用 */
-  compute_wheel_targets(0.0f, 0.2f, 0.0f);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -305,18 +319,48 @@ int main(void)
     HAL_FDCAN_GetProtocolStatus(&hfdcan3, &pstatus);
     HAL_FDCAN_GetErrorCounters(&hfdcan3, &ecounters);
 
-    printf("tx_ok=%lu tx_fail=%lu BusOff=%d ErrPassive=%d TEC=%lu REC=%lu\r\n",
-           tx_success_count, tx_fail_count,
-           pstatus.BusOff, pstatus.ErrorPassive,
-           (unsigned long)ecounters.TxErrorCnt, (unsigned long)ecounters.RxErrorCnt);
+  //   printf("tx_ok=%lu tx_fail=%lu BusOff=%d ErrPassive=%d TEC=%lu REC=%lu\r\n",
+  //          tx_success_count, tx_fail_count,
+  //          pstatus.BusOff, pstatus.ErrorPassive,
+  //          (unsigned long)ecounters.TxErrorCnt, (unsigned long)ecounters.RxErrorCnt);
 
-    printf("tx_ok=%lu tx_fail=%lu vel_rx=%lu vx=%.3f vy=%.3f omega=%.3f w0=%d w1=%d w2=%d\r\n",
-   tx_success_count, tx_fail_count, velocity_rx_count,
-   rx_vx, rx_vy, rx_omega,
-   (int)wheel_speed_target[0], (int)wheel_speed_target[1], (int)wheel_speed_target[2]);
+  //   printf("tx_ok=%lu tx_fail=%lu vel_rx=%lu vx=%.3f vy=%.3f omega=%.3f w0=%d w1=%d w2=%d\r\n",
+  //  tx_success_count, tx_fail_count, velocity_rx_count,
+  //  rx_vx, rx_vy, rx_omega,
+  //  (int)wheel_speed_target[0], (int)wheel_speed_target[1], (int)wheel_speed_target[2]);
+    // static uint32_t last_rx_count = 0;
+    // static uint32_t last_print_tick = 0;
 
-    
+    // if (HAL_GetTick() - last_print_tick >= 300)
+    // {
+    //   FDCAN_ProtocolStatusTypeDef pstatus1;
+    //   FDCAN_ErrorCountersTypeDef  ecounters1;
+    //   HAL_FDCAN_GetProtocolStatus(&hfdcan1, &pstatus1);
+    //   HAL_FDCAN_GetErrorCounters(&hfdcan1, &ecounters1);
+
+    //   printf("FDCAN1: BusOff=%d ErrPassive=%d Warning=%d TEC=%lu REC=%lu LastErrCode=%lu Activity=%lu\r\n",
+    //        pstatus1.BusOff, pstatus1.ErrorPassive, pstatus1.Warning,
+    //        (unsigned long)ecounters1.TxErrorCnt,
+    //        (unsigned long)ecounters1.RxErrorCnt,
+    //        (unsigned long)pstatus1.LastErrorCode,
+    //        (unsigned long)pstatus1.Activity);
+
+    //   last_print_tick = HAL_GetTick();
+    // }
+
+    // if (velocity_rx_count != last_rx_count)
+    // {
+    //   printf("CAN0x100 RX#%d vx=%d vy=%d omega=%d\r\n",
+    //   (int64_t)velocity_rx_count, (int64_t)rx_vx, (int64_t)rx_vy, (int64_t)rx_omega);
+    //   last_rx_count = velocity_rx_count;
+    // }
+    printf("CAN0x100 RX#%lu vx=%ld vy=%ld omega=%ld (x1000)\r\n",   // ← ループの外
+       (unsigned long)velocity_rx_count,
+       (long)(rx_vx    * 1000.0f),
+       (long)(rx_vy    * 1000.0f),
+       (long)(rx_omega * 1000.0f));
   }
+  
   /* USER CODE END 3 */
 }
 
@@ -394,8 +438,8 @@ static void MX_FDCAN1_Init(void)
   hfdcan1.Init.NominalTimeSeg2 = 4;
   hfdcan1.Init.DataPrescaler = 1;
   hfdcan1.Init.DataSyncJumpWidth = 1;
-  hfdcan1.Init.DataTimeSeg1 = 15;
-  hfdcan1.Init.DataTimeSeg2 = 4;
+  hfdcan1.Init.DataTimeSeg1 = 31;
+  hfdcan1.Init.DataTimeSeg2 = 8;
   hfdcan1.Init.StdFiltersNbr = 1;
   hfdcan1.Init.ExtFiltersNbr = 0;
   hfdcan1.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
