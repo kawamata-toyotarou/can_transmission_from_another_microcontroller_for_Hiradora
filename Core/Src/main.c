@@ -319,41 +319,41 @@ int main(void)
     HAL_FDCAN_GetProtocolStatus(&hfdcan3, &pstatus);
     HAL_FDCAN_GetErrorCounters(&hfdcan3, &ecounters);
 
-  //   printf("tx_ok=%lu tx_fail=%lu BusOff=%d ErrPassive=%d TEC=%lu REC=%lu\r\n",
-  //          tx_success_count, tx_fail_count,
-  //          pstatus.BusOff, pstatus.ErrorPassive,
-  //          (unsigned long)ecounters.TxErrorCnt, (unsigned long)ecounters.RxErrorCnt);
+    printf("tx_ok=%lu tx_fail=%lu BusOff=%d ErrPassive=%d TEC=%lu REC=%lu\r\n",
+           tx_success_count, tx_fail_count,
+           pstatus.BusOff, pstatus.ErrorPassive,
+           (unsigned long)ecounters.TxErrorCnt, (unsigned long)ecounters.RxErrorCnt);
 
-  //   printf("tx_ok=%lu tx_fail=%lu vel_rx=%lu vx=%.3f vy=%.3f omega=%.3f w0=%d w1=%d w2=%d\r\n",
-  //  tx_success_count, tx_fail_count, velocity_rx_count,
-  //  rx_vx, rx_vy, rx_omega,
-  //  (int)wheel_speed_target[0], (int)wheel_speed_target[1], (int)wheel_speed_target[2]);
-    // static uint32_t last_rx_count = 0;
-    // static uint32_t last_print_tick = 0;
+    printf("tx_ok=%lu tx_fail=%lu vel_rx=%lu vx=%.3f vy=%.3f omega=%.3f w0=%d w1=%d w2=%d\r\n",
+   tx_success_count, tx_fail_count, velocity_rx_count,
+   rx_vx, rx_vy, rx_omega,
+   (int)wheel_speed_target[0], (int)wheel_speed_target[1], (int)wheel_speed_target[2]);
+    static uint32_t last_rx_count = 0;
+    static uint32_t last_print_tick = 0;
 
-    // if (HAL_GetTick() - last_print_tick >= 300)
-    // {
-    //   FDCAN_ProtocolStatusTypeDef pstatus1;
-    //   FDCAN_ErrorCountersTypeDef  ecounters1;
-    //   HAL_FDCAN_GetProtocolStatus(&hfdcan1, &pstatus1);
-    //   HAL_FDCAN_GetErrorCounters(&hfdcan1, &ecounters1);
+    if (HAL_GetTick() - last_print_tick >= 300)
+    {
+      FDCAN_ProtocolStatusTypeDef pstatus1;
+      FDCAN_ErrorCountersTypeDef  ecounters1;
+      HAL_FDCAN_GetProtocolStatus(&hfdcan1, &pstatus1);
+      HAL_FDCAN_GetErrorCounters(&hfdcan1, &ecounters1);
 
-    //   printf("FDCAN1: BusOff=%d ErrPassive=%d Warning=%d TEC=%lu REC=%lu LastErrCode=%lu Activity=%lu\r\n",
-    //        pstatus1.BusOff, pstatus1.ErrorPassive, pstatus1.Warning,
-    //        (unsigned long)ecounters1.TxErrorCnt,
-    //        (unsigned long)ecounters1.RxErrorCnt,
-    //        (unsigned long)pstatus1.LastErrorCode,
-    //        (unsigned long)pstatus1.Activity);
+      printf("FDCAN1: BusOff=%d ErrPassive=%d Warning=%d TEC=%lu REC=%lu LastErrCode=%lu Activity=%lu\r\n",
+           pstatus1.BusOff, pstatus1.ErrorPassive, pstatus1.Warning,
+           (unsigned long)ecounters1.TxErrorCnt,
+           (unsigned long)ecounters1.RxErrorCnt,
+           (unsigned long)pstatus1.LastErrorCode,
+           (unsigned long)pstatus1.Activity);
 
-    //   last_print_tick = HAL_GetTick();
-    // }
+      last_print_tick = HAL_GetTick();
+    }
 
-    // if (velocity_rx_count != last_rx_count)
-    // {
-    //   printf("CAN0x100 RX#%d vx=%d vy=%d omega=%d\r\n",
-    //   (int64_t)velocity_rx_count, (int64_t)rx_vx, (int64_t)rx_vy, (int64_t)rx_omega);
-    //   last_rx_count = velocity_rx_count;
-    // }
+    if (velocity_rx_count != last_rx_count)
+    {
+      printf("CAN0x100 RX#%d vx=%d vy=%d omega=%d\r\n",
+      (int64_t)velocity_rx_count, (int64_t)rx_vx, (int64_t)rx_vy, (int64_t)rx_omega);
+      last_rx_count = velocity_rx_count;
+    }
     printf("CAN0x100 RX#%lu vx=%ld vy=%ld omega=%ld (x1000)\r\n",   // ← ループの外
        (unsigned long)velocity_rx_count,
        (long)(rx_vx    * 1000.0f),
@@ -373,20 +373,16 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Configure the main internal regulator output voltage
-  */
+  /* Voltage Scalingはそのまま(SCALE1, boost不要, 80MHzなので) */
   HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  /** HSIをHSEに変更 **/
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;   // ← HSIから変更
+  RCC_OscInitStruct.HSEState       = RCC_HSE_ON;                // 水晶なのでON(バイパスではない)
+  RCC_OscInitStruct.PLL.PLLState   = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource  = RCC_PLLSOURCE_HSE;         // ← HSIから変更
   RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV1;
-  RCC_OscInitStruct.PLL.PLLN = 10;
+  RCC_OscInitStruct.PLL.PLLN = 10;                              // ← 変更しない(80MHzを維持)
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
   RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
@@ -395,16 +391,14 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.SYSCLKSource   = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider  = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)   // 80MHzなのでLATENCY_2のまま
   {
     Error_Handler();
   }
