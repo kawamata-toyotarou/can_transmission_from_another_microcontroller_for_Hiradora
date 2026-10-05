@@ -303,64 +303,86 @@ int main(void)
   HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
   HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, 0, 0); 
   HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
-  HAL_TIM_Base_Start_IT(&htim6);
+  //HAL_TIM_Base_Start_IT(&htim6);
 
+  FDCAN_TxHeaderTypeDef m2006_TxHeader = {0};
+
+  m2006_TxHeader.Identifier = 0x200;
+  m2006_TxHeader.IdType = FDCAN_STANDARD_ID;
+  m2006_TxHeader.TxFrameType = FDCAN_DATA_FRAME;
+  m2006_TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+  m2006_TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+  m2006_TxHeader.BitRateSwitch = FDCAN_BRS_OFF;
+  m2006_TxHeader.FDFormat = FDCAN_CLASSIC_CAN;
+  m2006_TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+  m2006_TxHeader.MessageMarker = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    FDCAN_ProtocolStatusTypeDef pstatus;
-    FDCAN_ErrorCountersTypeDef  ecounters;
-    HAL_FDCAN_GetProtocolStatus(&hfdcan3, &pstatus);
-    HAL_FDCAN_GetErrorCounters(&hfdcan3, &ecounters);
+  //   FDCAN_ProtocolStatusTypeDef pstatus;
+  //   FDCAN_ErrorCountersTypeDef  ecounters;
+  //   HAL_FDCAN_GetProtocolStatus(&hfdcan3, &pstatus);
+  //   HAL_FDCAN_GetErrorCounters(&hfdcan3, &ecounters);
 
-    printf("tx_ok=%lu tx_fail=%lu BusOff=%d ErrPassive=%d TEC=%lu REC=%lu\r\n",
-           tx_success_count, tx_fail_count,
-           pstatus.BusOff, pstatus.ErrorPassive,
-           (unsigned long)ecounters.TxErrorCnt, (unsigned long)ecounters.RxErrorCnt);
+  //   printf("tx_ok=%lu tx_fail=%lu BusOff=%d ErrPassive=%d TEC=%lu REC=%lu\r\n",
+  //          tx_success_count, tx_fail_count,
+  //          pstatus.BusOff, pstatus.ErrorPassive,
+  //          (unsigned long)ecounters.TxErrorCnt, (unsigned long)ecounters.RxErrorCnt);
 
-    printf("tx_ok=%lu tx_fail=%lu vel_rx=%lu vx=%.3f vy=%.3f omega=%.3f w0=%d w1=%d w2=%d\r\n",
-   tx_success_count, tx_fail_count, velocity_rx_count,
-   rx_vx, rx_vy, rx_omega,
-   (int)wheel_speed_target[0], (int)wheel_speed_target[1], (int)wheel_speed_target[2]);
-    static uint32_t last_rx_count = 0;
-    static uint32_t last_print_tick = 0;
+  //   printf("tx_ok=%lu tx_fail=%lu vel_rx=%lu vx=%.3f vy=%.3f omega=%.3f w0=%d w1=%d w2=%d\r\n",
+  //  tx_success_count, tx_fail_count, velocity_rx_count,
+  //  rx_vx, rx_vy, rx_omega,
+  //  (int)wheel_speed_target[0], (int)wheel_speed_target[1], (int)wheel_speed_target[2]);
+  //   static uint32_t last_rx_count = 0;
+  //   static uint32_t last_print_tick = 0;
 
-    if (HAL_GetTick() - last_print_tick >= 300)
-    {
-      FDCAN_ProtocolStatusTypeDef pstatus1;
-      FDCAN_ErrorCountersTypeDef  ecounters1;
-      HAL_FDCAN_GetProtocolStatus(&hfdcan1, &pstatus1);
-      HAL_FDCAN_GetErrorCounters(&hfdcan1, &ecounters1);
+  //   if (HAL_GetTick() - last_print_tick >= 300)
+  //   {
+  //     FDCAN_ProtocolStatusTypeDef pstatus1;
+  //     FDCAN_ErrorCountersTypeDef  ecounters1;
+  //     HAL_FDCAN_GetProtocolStatus(&hfdcan1, &pstatus1);
+  //     HAL_FDCAN_GetErrorCounters(&hfdcan1, &ecounters1);
 
-      printf("FDCAN1: BusOff=%d ErrPassive=%d Warning=%d TEC=%lu REC=%lu LastErrCode=%lu Activity=%lu\r\n",
-           pstatus1.BusOff, pstatus1.ErrorPassive, pstatus1.Warning,
-           (unsigned long)ecounters1.TxErrorCnt,
-           (unsigned long)ecounters1.RxErrorCnt,
-           (unsigned long)pstatus1.LastErrorCode,
-           (unsigned long)pstatus1.Activity);
+  //     printf("FDCAN1: BusOff=%d ErrPassive=%d Warning=%d TEC=%lu REC=%lu LastErrCode=%lu Activity=%lu\r\n",
+  //          pstatus1.BusOff, pstatus1.ErrorPassive, pstatus1.Warning,
+  //          (unsigned long)ecounters1.TxErrorCnt,
+  //          (unsigned long)ecounters1.RxErrorCnt,
+  //          (unsigned long)pstatus1.LastErrorCode,
+  //          (unsigned long)pstatus1.Activity);
 
-      last_print_tick = HAL_GetTick();
+  //     last_print_tick = HAL_GetTick();
+  //   }
+
+  //   if (velocity_rx_count != last_rx_count)
+  //   {
+  //     printf("CAN0x100 RX#%d vx=%d vy=%d omega=%d\r\n",
+  //     (int64_t)velocity_rx_count, (int64_t)rx_vx, (int64_t)rx_vy, (int64_t)rx_omega);
+  //     last_rx_count = velocity_rx_count;
+  //   }
+  //   printf("CAN0x100 RX#%lu vx=%ld vy=%ld omega=%ld (x1000)\r\n",   // ← ループの外
+  //      (unsigned long)velocity_rx_count,
+  //      (long)(rx_vx    * 1000.0f),
+  //      (long)(rx_vy    * 1000.0f),
+  //      (long)(rx_omega * 1000.0f));
+  // }
+    uint8_t TxData[8] = {0};
+
+    TxData[2] = 1000 >> 8;
+    TxData[3] = (uint8_t)(1000 & 0xff);
+
+    if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan3, &m2006_TxHeader, TxData) != HAL_OK) {
+      printf("addmessage is error\r\n");
     }
 
-    if (velocity_rx_count != last_rx_count)
-    {
-      printf("CAN0x100 RX#%d vx=%d vy=%d omega=%d\r\n",
-      (int64_t)velocity_rx_count, (int64_t)rx_vx, (int64_t)rx_vy, (int64_t)rx_omega);
-      last_rx_count = velocity_rx_count;
-    }
-    printf("CAN0x100 RX#%lu vx=%ld vy=%ld omega=%ld (x1000)\r\n",   // ← ループの外
-       (unsigned long)velocity_rx_count,
-       (long)(rx_vx    * 1000.0f),
-       (long)(rx_vy    * 1000.0f),
-       (long)(rx_omega * 1000.0f));
+    HAL_Delay(10);
   }
-  
   /* USER CODE END 3 */
 }
 
