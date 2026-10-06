@@ -88,6 +88,7 @@ UART_HandleTypeDef huart2;
 volatile uint32_t tx_success_count = 0;
 volatile uint32_t tx_fail_count = 0;
 
+FDCAN_TxHeaderTypeDef m2006_TxHeader = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -246,11 +247,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM6)
     {
-        for (uint8_t i = 0; i < 3; i++)
-        {
-            HAL_StatusTypeDef st = send_motor_cmd(i, wheel_speed_target[i],
-                                                   goal_pid_mode, goal_control_motor_mode);
-            if (st == HAL_OK) { tx_success_count++; } else { tx_fail_count++; }
+        //ロボマスの実験時につないでいないのに動かすとACKがかえってこないでつまるのでコメントアウト
+        // for (uint8_t i = 0; i < 3; i++)
+        // {
+        //     HAL_StatusTypeDef st = send_motor_cmd(i, wheel_speed_target[i],
+        //                                            goal_pid_mode, goal_control_motor_mode);
+        //     if (st == HAL_OK) { tx_success_count++; } else { tx_fail_count++; }
+        // }
+
+        uint8_t TxData[8] = {0};
+
+        TxData[2] = 1000 >> 8;
+        TxData[3] = (uint8_t)(1000 & 0xff);
+ 
+        if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan3, &m2006_TxHeader, TxData) != HAL_OK) {
+          printf("addmessage is error\r\n");
         }
     }
 }
@@ -303,9 +314,6 @@ int main(void)
   HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
   HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, 0, 0); 
   HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
-  //HAL_TIM_Base_Start_IT(&htim6);
-
-  FDCAN_TxHeaderTypeDef m2006_TxHeader = {0};
 
   m2006_TxHeader.Identifier = 0x200;
   m2006_TxHeader.IdType = FDCAN_STANDARD_ID;
@@ -316,6 +324,8 @@ int main(void)
   m2006_TxHeader.FDFormat = FDCAN_CLASSIC_CAN;
   m2006_TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
   m2006_TxHeader.MessageMarker = 0;
+
+  HAL_TIM_Base_Start_IT(&htim6);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -372,16 +382,7 @@ int main(void)
   //      (long)(rx_vy    * 1000.0f),
   //      (long)(rx_omega * 1000.0f));
   // }
-    uint8_t TxData[8] = {0};
-
-    TxData[2] = 1000 >> 8;
-    TxData[3] = (uint8_t)(1000 & 0xff);
-
-    if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan3, &m2006_TxHeader, TxData) != HAL_OK) {
-      printf("addmessage is error\r\n");
-    }
-
-    HAL_Delay(10);
+    // HAL_Delay(10);
   }
   /* USER CODE END 3 */
 }
