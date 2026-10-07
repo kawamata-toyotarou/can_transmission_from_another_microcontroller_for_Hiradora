@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "stm32g474xx.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -29,6 +30,31 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef struct{
+    volatile float speed_total_difference;
+    volatile float speed_last_time_difference;   
+    float Kp, Ki, Kd, Ka;
+    volatile uint16_t angle_data;   
+    volatile int16_t speed;
+    volatile uint16_t can_id; 
+    int16_t speed_target;
+    int16_t current_target;
+    volatile uint16_t angle;
+    volatile float current;
+    volatile float lowpass_difference;
+    volatile float angle_target;
+    volatile float last_time_angle;
+    volatile float angle_total_difference;
+    volatile float angle_last_time_difference; 
+    volatile float angle_lowpass_difference;
+    volatile int16_t rotate_last_time_angle;
+    volatile int32_t rotate_total_angle; 
+    volatile int16_t rotate_now_angle;
+    int init_flag;
+    int16_t now_current; 
+    int16_t to_send_current;
+    volatile int32_t can_now_time;
+} Motor;
 typedef struct __attribute__((packed)) {
     float vx;      /* byte0-3: m/s (そのまま) */
     float vy;      /* byte4-7: m/s (そのまま) */
@@ -42,18 +68,14 @@ typedef struct __attribute__((packed)) {
     uint8_t reserved[2];          /* byte6-7 */
 } can_motor_cmd_t;
 
-#define CAN_VELOCITY_CMD_ID  0x100u
-
-#define CAN_MOTOR_CMD_BASE_ID 0x301u
-
-volatile float goal_speed_target = 300;
-volatile uint8_t goal_pid_mode = 0;
-volatile uint8_t goal_control_motor_mode = 0;
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define CAN_VELOCITY_CMD_ID  0x100u
+
+#define CAN_MOTOR_CMD_BASE_ID 0x301u
+
 #define WHEEL_RADIUS_M      0.037f  // ホイール半径[m] ← 実機に合わせて変更
 #define ROBOT_RADIUS_M      0.31f   // 中心からホイールまでの距離[m] ← 実機に合わせて変更
 
@@ -62,18 +84,20 @@ volatile uint8_t goal_control_motor_mode = 0;
 #define WHEEL2_ANGLE_RAD    ((float)M_PI)  
 
 #define MAX_WHEEL_RPM 5000.0f  // doc1/2側のクリップ値と合わせる
+/* USER CODE END PD */
 
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
 volatile float rx_vx    = 0.0f;   /* m/s */
 volatile float rx_vy    = 0.0f;   /* m/s */
 volatile float rx_omega = 0.0f;   /* rad/s */
 volatile uint32_t velocity_rx_count = 0;
 
 volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};
-/* USER CODE END PD */
 
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
+volatile float goal_speed_target = 300;
+volatile uint8_t goal_pid_mode = 0;
+volatile uint8_t goal_control_motor_mode = 0;
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -88,7 +112,9 @@ UART_HandleTypeDef huart2;
 volatile uint32_t tx_success_count = 0;
 volatile uint32_t tx_fail_count = 0;
 
-FDCAN_TxHeaderTypeDef m2006_TxHeader = {0};
+FDCAN_TxHeaderTypeDef m2006_TxHeader = {0};  
+volatile uint8_t is_outer_loop = 0;          //int pid();関数を少し変更
+Motor m2006 = {0};                           //この方法で構造体をすべて初期化できるらしい
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -102,10 +128,44 @@ static void MX_USART2_UART_Init(void);
 static void FDCAN1_ConfigFilterAndStart(void);
 static void compute_wheel_targets(float vx, float vy, float omega);
 static inline float be_bytes_to_float(const uint8_t *p);
+int pid(float v, float mokuhyou, float p, float i, float d, volatile float *gosagoukei, volatile float *lowpastgosa, float gravity, int cutoff, volatile float *maenogosa, int h);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+int pid(float v, float mokuhyou, float p, float i, float d, volatile float *gosagoukei, volatile float *lowpastgosa, float gravity, int cutoff, volatile float *maenogosa, int h) {
+    float current = (float)v;
+    float gosa = (mokuhyou - current);
+    
+    *gosagoukei += gosa * 0.001;
+    if (*gosagoukei > 10000) *gosagoukei = 10000;
+    if (*gosagoukei < -10000) *gosagoukei = -10000;
+    
+    float derivative = (gosa - *maenogosa);
+    *lowpastgosa += (derivative - *lowpastgosa) / cutoff;
+    if (*lowpastgosa > 100) *lowpastgosa = 100;
+    if (*lowpastgosa < -100) *lowpastgosa = -100;
+
+    int output = 0;
+    
+    if (is_outer_loop) {
+        output = p * gosa;           // 外側はP制御のみ
+    } else {
+        output = p * gosa + i * (*gosagoukei) + d * (*lowpastgosa) + gravity;
+        // 内側はフルPID（Ki・Kdが有効になる）
+    }
+    
+    *maenogosa = gosa;
+    
+    if (output > 16384.0f) {
+        output = 16384.0f;
+    } else if (output < -16384.0f) {
+        output = -16384.0f;
+    }
+    
+    return (int16_t)output;
+}
 
 static inline float be_bytes_to_float(const uint8_t *p)
 {
@@ -170,47 +230,58 @@ static void compute_wheel_targets(float vx, float vy, float omega)
 
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 {
-    if (hfdcan->Instance != FDCAN1) return;
-    if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) == 0) return;
 
     FDCAN_RxHeaderTypeDef RxHeader;
     uint8_t RxData[64];   // CAN FDは最大64byteなのでバッファを拡張
 
     if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &RxHeader, RxData) != HAL_OK)
     {
-        return;
-    }
-
-    if (RxHeader.IdType != FDCAN_STANDARD_ID) return;
-    if (RxHeader.Identifier != CAN_VELOCITY_CMD_ID) return;
-    if (RxHeader.FDFormat != FDCAN_FD_CAN ||
-      RxHeader.BitRateSwitch != FDCAN_BRS_ON ||
-      RxHeader.DataLength != FDCAN_DLC_BYTES_12)
-    {
       return;
     }
-    can_velocity_cmd_t cmd;
+
+    if (hfdcan->Instance == FDCAN1) {
+      if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) == 0) return;
+
+
+      if (RxHeader.IdType != FDCAN_STANDARD_ID) return;
+      if (RxHeader.Identifier != CAN_VELOCITY_CMD_ID) return;
+      if (RxHeader.FDFormat != FDCAN_FD_CAN ||
+        RxHeader.BitRateSwitch != FDCAN_BRS_ON ||
+        RxHeader.DataLength != FDCAN_DLC_BYTES_12)
+      {
+        return;
+      }
+      can_velocity_cmd_t cmd;
     
-    cmd.vx    = be_bytes_to_float(&RxData[0]);
-    cmd.vy    = be_bytes_to_float(&RxData[4]);
-    cmd.omega = be_bytes_to_float(&RxData[8]);
+      cmd.vx    = be_bytes_to_float(&RxData[0]);
+      cmd.vy    = be_bytes_to_float(&RxData[4]);
+      cmd.omega = be_bytes_to_float(&RxData[8]);
 
-    rx_vx    = cmd.vx;      
-    rx_vy    = cmd.vy;
-    rx_omega = cmd.omega;
+      rx_vx    = cmd.vx;      
+      rx_vy    = cmd.vy;
+      rx_omega = cmd.omega;
 
-    compute_wheel_targets(rx_vy, -rx_vx, rx_omega); 
+      compute_wheel_targets(rx_vy, -rx_vx, rx_omega); 
 
-    velocity_rx_count++;
+      velocity_rx_count++;
+    }
+    
+    if (hfdcan ->Instance == FDCAN3) {
+
+      if (RxHeader.IdType != FDCAN_STANDARD_ID) return;
+      if (RxHeader.Identifier != 0x202) return;
+      if (RxHeader.DataLength != FDCAN_DLC_BYTES_8) return;
+
+      m2006.angle_data = ((uint16_t)RxData[0] << 8) | RxData[1];
+      m2006.speed = (int16_t)(((uint16_t)RxData[2] << 8) | RxData[3]);
+      m2006.now_current = (int16_t)(((uint16_t)RxData[4] << 8) | RxData[5]);
+      m2006.can_now_time++;
+    }
 }
 
 static void FDCAN3_ConfigAndStart(void)  
 {
     FDCAN_FilterTypeDef sFilterConfig = {0};
-
-    /* 基本的に送信用のリポジトリなのでフィルタは全拒否のグローバル設定 */
-    HAL_FDCAN_ConfigGlobalFilter(&hfdcan3, FDCAN_REJECT, FDCAN_REJECT,
-                                  FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE);
 
     if (HAL_FDCAN_Start(&hfdcan3) != HAL_OK)   //  hfdcan3
     {
@@ -308,13 +379,13 @@ int main(void)
   MX_TIM6_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  FDCAN3_ConfigAndStart();   
   FDCAN1_ConfigFilterAndStart();
   HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
   HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, 0, 0); 
   HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
 
+  /*ロボマスへの送信設定*/
   m2006_TxHeader.Identifier = 0x200;
   m2006_TxHeader.IdType = FDCAN_STANDARD_ID;
   m2006_TxHeader.TxFrameType = FDCAN_DATA_FRAME;
@@ -325,7 +396,21 @@ int main(void)
   m2006_TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
   m2006_TxHeader.MessageMarker = 0;
 
-  HAL_TIM_Base_Start_IT(&htim6);
+  /*ロボマスからの受信設定*/
+  FDCAN_FilterTypeDef sFilterConfig = {0};
+  sFilterConfig.IdType = FDCAN_STANDARD_ID;
+  sFilterConfig.FilterIndex = 0;
+  sFilterConfig.FilterType = FDCAN_FILTER_DUAL;
+  sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+  sFilterConfig.FilterID1 = 0x202;
+  sFilterConfig.FilterID2 = 0x202;
+
+  HAL_FDCAN_ConfigFilter(&hfdcan3, &sFilterConfig);
+  HAL_FDCAN_ActivateNotification(&hfdcan3, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0);
+  HAL_NVIC_SetPriority(FDCAN3_IT0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(FDCAN3_IT0_IRQn);
+  FDCAN3_ConfigAndStart(); 
+  HAL_TIM_Base_Start_IT(&htim6);  
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -383,6 +468,15 @@ int main(void)
   //      (long)(rx_omega * 1000.0f));
   // }
     // HAL_Delay(10);
+    static uint32_t last_print_tick = 0;
+
+    if (HAL_GetTick() - last_print_tick >= 200)
+    {
+      last_print_tick = HAL_GetTick();
+
+      printf("rx=%ld angle=%u speed=%d current=%d\r\n", (long)m2006.can_now_time, m2006.angle_data, m2006.speed, m2006.now_current);
+    }
+
   }
   /* USER CODE END 3 */
 }
