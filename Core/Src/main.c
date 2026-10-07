@@ -115,7 +115,7 @@ volatile uint32_t tx_fail_count = 0;
 FDCAN_TxHeaderTypeDef m2006_TxHeader = {0};  
 volatile uint8_t is_outer_loop = 0;          //int pid();関数を少し変更
 Motor m2006 = {0};                           //この方法で構造体をすべて初期化できるらしい
-volatile uint8_t pid_mode = 1;               //0なら速度制御 1なら位置制御
+volatile uint8_t control_mode = 2;               //0なら速度制御 1なら位置制御 2ならカスケード制御
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -358,10 +358,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         uint8_t TxData[8] = {0};
         int16_t m2006_send_to_current = 0;
 
-        if (pid_mode == 0) {
+        if (control_mode == 0) {
           m2006_send_to_current = pid(m2006.speed, m2006.speed_target, m2006.Kp, m2006.Ki, m2006.Kd, &m2006.speed_total_difference, &m2006.lowpass_difference, 0.0f, 10, &m2006.speed_last_time_difference, 0);
         }
-        else if (pid_mode == 1) {
+        else if (control_mode == 1) {
           m2006_send_to_current = pid(m2006.rotate_total_angle, m2006.angle_target, m2006.Kp, m2006.Ki, m2006.Kd, &m2006.angle_total_difference, &m2006.angle_lowpass_difference, 0.0f, 10, &m2006.angle_last_time_difference, 0);
           m2006.last_time_angle = m2006.angle;
           int error_abs = m2006.angle_target - m2006.rotate_total_angle;
@@ -369,7 +369,28 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
           if (error_abs < 200) {
             m2006_send_to_current = 0;
             m2006.angle_total_difference = 0;
-         }
+          }
+        }
+        else if (control_mode == 2) {
+          m2006.Kp = 1.5f;
+          m2006.Ki = 0.0f;
+          m2006.Kd = 0.0f;
+          m2006.speed_target = pid(m2006.rotate_total_angle, m2006.angle_target, m2006.Kp, m2006.Ki, m2006.Kd, &m2006.angle_total_difference, &m2006.angle_lowpass_difference, 0.0f, 10, &m2006.angle_last_time_difference, 0);
+
+          m2006.Kp = 15.0f;
+          m2006.Ki = 8.0f;
+          m2006.Kd = 10.0f;
+          m2006_send_to_current = pid(m2006.speed, m2006.speed_target, m2006.Kp, m2006.Ki, m2006.Kd, &m2006.speed_total_difference, &m2006.lowpass_difference, 0.0f, 10, &m2006.speed_last_time_difference, 0);
+          m2006.last_time_angle = m2006.angle;
+          int error_abs = m2006.angle_target - m2006.rotate_total_angle;
+          if (error_abs < 0) error_abs = -error_abs;
+          if (error_abs < 200) {
+            m2006_send_to_current = 0;
+            m2006.angle_total_difference = 0;
+            m2006.speed_total_difference = 0;
+            m2006.lowpass_difference = 0;
+            m2006.speed_target = 0;
+          }
         }
 
         TxData[2] = m2006_send_to_current >> 8;
@@ -407,19 +428,22 @@ int main(void)
 
   /* USER CODE BEGIN Init */
   m2006.can_id = 0x202;
-  if (pid_mode == 0) {
+  if (control_mode == 0) {
     m2006.speed_target = 1000;  
     m2006.Kp = 40.0f;
     m2006.Ki = 8.0f;
     m2006.Kd = 7.0f;
     m2006.Ka = 0.0f;
   }
-  else if (pid_mode == 1) {
+  else if (control_mode == 1) {
     m2006.angle_target = 90.0f / 360.0f * 8192.0f * 36.0f;  
     m2006.Kp = 1.0f;
     m2006.Ki = 0.03f;
     m2006.Kd = 80.0f;
     m2006.Ka = 0.0f;
+  }
+  else if (control_mode == 2) {
+    m2006.angle_target = 90.0f / 360.0f * 8192.0f * 36.0f;  
   }
   /* USER CODE END Init */
 
@@ -532,10 +556,10 @@ int main(void)
     {
       last_print_tick = HAL_GetTick();
 
-      if (pid_mode == 0) {
+      if (control_mode == 0) {
         printf("rx=%ld angle=%u speed=%d current=%d\r\n", (long)m2006.can_now_time, m2006.angle_data, m2006.speed, m2006.now_current);
       }
-      else if (pid_mode == 1) {
+      else if (control_mode == 1 || control_mode == 2) {
         printf("rx=%ld angle=%u total=%ld target=%ld speed=%d current=%d\r\n", (long)m2006.can_now_time,m2006.angle_data, (long)m2006.rotate_total_angle, (long)m2006.angle_target, m2006.speed,m2006.now_current);
       }
 
