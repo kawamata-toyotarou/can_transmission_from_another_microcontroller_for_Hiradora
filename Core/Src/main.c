@@ -115,6 +115,7 @@ volatile uint32_t tx_fail_count = 0;
 FDCAN_TxHeaderTypeDef m2006_TxHeader = {0};  
 volatile uint8_t is_outer_loop = 0;          //int pid();関数を少し変更
 Motor m2006 = {0};                           //この方法で構造体をすべて初期化できるらしい
+volatile uint8_t pid_mode = 1;               //0なら速度制御 1なら位置制御
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -129,10 +130,30 @@ static void FDCAN1_ConfigFilterAndStart(void);
 static void compute_wheel_targets(float vx, float vy, float omega);
 static inline float be_bytes_to_float(const uint8_t *p);
 int pid(float v, float mokuhyou, float p, float i, float d, volatile float *gosagoukei, volatile float *lowpastgosa, float gravity, int cutoff, volatile float *maenogosa, int h);
+void update_total_angle(Motor *m);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void update_total_angle(Motor *m) {
+
+    if (m->init_flag == 0) {
+        m->rotate_last_time_angle = m->angle_data;
+        m->rotate_total_angle = 0;
+        m->init_flag = 1;
+        return;
+    }
+
+    int16_t diff = m->angle_data - m->rotate_last_time_angle;
+    if (diff > 4096) {
+        diff -= 8192;
+    }
+    if (diff < -4096) {
+        diff += 8192;
+    }
+    m->rotate_total_angle += diff;
+    m->rotate_last_time_angle = m->angle_data;
+}
 
 int pid(float v, float mokuhyou, float p, float i, float d, volatile float *gosagoukei, volatile float *lowpastgosa, float gravity, int cutoff, volatile float *maenogosa, int h) {
     float current = (float)v;
@@ -276,6 +297,8 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
       m2006.speed = (int16_t)(((uint16_t)RxData[2] << 8) | RxData[3]);
       m2006.now_current = (int16_t)(((uint16_t)RxData[4] << 8) | RxData[5]);
       m2006.can_now_time++;
+
+      update_total_angle(&m2006);
     }
 }
 
@@ -333,8 +356,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         }
 
         uint8_t TxData[8] = {0};
+        int16_t m2006_send_to_current = 0;
 
-        int16_t m2006_send_to_current = pid(m2006.speed, m2006.speed_target, m2006.Kp, m2006.Ki, m2006.Kd, &m2006.speed_total_difference, &m2006.lowpass_difference, 0.0f, 10, &m2006.speed_last_time_difference, 0);
+        if (pid_mode == 0) {
+          m2006_send_to_current = pid(m2006.speed, m2006.speed_target, m2006.Kp, m2006.Ki, m2006.Kd, &m2006.speed_total_difference, &m2006.lowpass_difference, 0.0f, 10, &m2006.speed_last_time_difference, 0);
+        }
+        else if (pid_mode == 1) {
+          m2006_send_to_current = pid(m2006.rotate_total_angle, m2006.angle_target, m2006.Kp, m2006.Ki, m2006.Kd, &m2006.angle_total_difference, &m2006.angle_lowpass_difference, 0.0f, 10, &m2006.angle_last_time_difference, 0);
+          m2006.last_time_angle = m2006.angle;
+          int error_abs = m2006.angle_target - m2006.rotate_total_angle;
+          if (error_abs < 0) error_abs = -error_abs;
+          if (error_abs < 200) {
+            m2006_send_to_current = 0;
+            m2006.angle_total_difference = 0;
+         }
+        }
 
         TxData[2] = m2006_send_to_current >> 8;
         TxData[3] = (uint8_t)(m2006_send_to_current & 0xff);
@@ -371,11 +407,20 @@ int main(void)
 
   /* USER CODE BEGIN Init */
   m2006.can_id = 0x202;
-  m2006.speed_target = 1000;  
-  m2006.Kp = 40.0f;
-  m2006.Ki = 8.0f;
-  m2006.Kd = 7.0f;
-  m2006.Ka = 0.0f;
+  if (pid_mode == 0) {
+    m2006.speed_target = 1000;  
+    m2006.Kp = 40.0f;
+    m2006.Ki = 8.0f;
+    m2006.Kd = 7.0f;
+    m2006.Ka = 0.0f;
+  }
+  else if (pid_mode == 1) {
+    m2006.angle_target = 90.0f / 360.0f * 8192.0f * 36.0f;  
+    m2006.Kp = 1.0f;
+    m2006.Ki = 0.03f;
+    m2006.Kd = 80.0f;
+    m2006.Ka = 0.0f;
+  }
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -487,9 +532,14 @@ int main(void)
     {
       last_print_tick = HAL_GetTick();
 
-      printf("rx=%ld angle=%u speed=%d current=%d\r\n", (long)m2006.can_now_time, m2006.angle_data, m2006.speed, m2006.now_current);
-    }
+      if (pid_mode == 0) {
+        printf("rx=%ld angle=%u speed=%d current=%d\r\n", (long)m2006.can_now_time, m2006.angle_data, m2006.speed, m2006.now_current);
+      }
+      else if (pid_mode == 1) {
+        printf("rx=%ld angle=%u total=%ld target=%ld speed=%d current=%d\r\n", (long)m2006.can_now_time,m2006.angle_data, (long)m2006.rotate_total_angle, (long)m2006.angle_target, m2006.speed,m2006.now_current);
+      }
 
+    }
   }
   /* USER CODE END 3 */
 }
