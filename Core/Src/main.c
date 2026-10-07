@@ -318,6 +318,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM6)
     {
+
         //ロボマスの実験時につないでいないのに動かすとACKがかえってこないでつまるのでコメントアウト
         // for (uint8_t i = 0; i < 3; i++)
         // {
@@ -326,10 +327,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         //     if (st == HAL_OK) { tx_success_count++; } else { tx_fail_count++; }
         // }
 
+        if (m2006.can_now_time == 0)
+        {
+          return;
+        }
+
         uint8_t TxData[8] = {0};
 
-        TxData[2] = 1000 >> 8;
-        TxData[3] = (uint8_t)(1000 & 0xff);
+        int16_t m2006_send_to_current = pid(m2006.speed, m2006.speed_target, m2006.Kp, m2006.Ki, m2006.Kd, &m2006.speed_total_difference, &m2006.lowpass_difference, 0.0f, 10, &m2006.speed_last_time_difference, 0);
+
+        TxData[2] = m2006_send_to_current >> 8;
+        TxData[3] = (uint8_t)(m2006_send_to_current & 0xff);
  
         if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan3, &m2006_TxHeader, TxData) != HAL_OK) {
           printf("addmessage is error\r\n");
@@ -362,7 +370,12 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  m2006.can_id = 0x202;
+  m2006.speed_target = 1000;  
+  m2006.Kp = 40.0f;
+  m2006.Ki = 8.0f;
+  m2006.Kd = 7.0f;
+  m2006.Ka = 0.0f;
   /* USER CODE END Init */
 
   /* Configure the system clock */
