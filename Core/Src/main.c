@@ -46,14 +46,14 @@ typedef struct __attribute__((packed)) {
 
 #define CAN_MOTOR_CMD_BASE_ID 0x301u
 
-volatile float goal_speed_target = 300;
-volatile uint8_t goal_pid_mode = 0;
-volatile uint8_t goal_control_motor_mode = 0;
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define CAN_VELOCITY_CMD_ID  0x100u
+
+#define CAN_MOTOR_CMD_BASE_ID 0x301u
+
 #define WHEEL_RADIUS_M      0.037f  // ホイール半径[m] ← 実機に合わせて変更
 #define ROBOT_RADIUS_M      0.31f   // 中心からホイールまでの距離[m] ← 実機に合わせて変更
 
@@ -63,12 +63,17 @@ volatile uint8_t goal_control_motor_mode = 0;
 
 #define MAX_WHEEL_RPM 5000.0f  // doc1/2側のクリップ値と合わせる
 
-volatile float rx_vx    = 0.0f;   /* m/s */
-volatile float rx_vy    = 0.0f;   /* m/s */
-volatile float rx_omega = 0.0f;   /* rad/s */
-volatile uint32_t velocity_rx_count = 0;
+#define ROBOSTRIDE_HOST_ID   0xFDu
+#define ROBOSTRIDE_MOTOR_ID  0x01u
 
-volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};
+#define RS_TYPE_ENABLE       0x03u
+#define RS_TYPE_STOP         0x04u
+#define RS_TYPE_WRITE_PARAM  0x12u
+
+#define RS_PARAM_RUN_MODE    0x7005u
+#define RS_PARAM_LIMIT_CUR   0x7018u
+#define RS_PARAM_ACC_RAD     0x7022u
+#define RS_PARAM_SPD_REF     0x700Au
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -87,7 +92,19 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 volatile uint32_t tx_success_count = 0;
 volatile uint32_t tx_fail_count = 0;
+volatile HAL_StatusTypeDef rs_last_tx_status = HAL_OK;
+volatile uint32_t rs_last_tx_id = 0;
 
+volatile float goal_speed_target = 300;
+volatile uint8_t goal_pid_mode = 0;
+volatile uint8_t goal_control_motor_mode = 0;
+
+volatile float rx_vx    = 0.0f;   /* m/s */
+volatile float rx_vy    = 0.0f;   /* m/s */
+volatile float rx_omega = 0.0f;   /* rad/s */
+volatile uint32_t velocity_rx_count = 0;
+
+volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -101,10 +118,87 @@ static void MX_USART2_UART_Init(void);
 static void FDCAN1_ConfigFilterAndStart(void);
 static void compute_wheel_targets(float vx, float vy, float omega);
 static inline float be_bytes_to_float(const uint8_t *p);
+static HAL_StatusTypeDef robostride_send(uint8_t type, uint16_t data_area, uint8_t motor_id, uint8_t data[8]);
+static void put_u16_le(uint8_t *p, uint16_t v);
+static void put_float_le(uint8_t *p, float v);
+static HAL_StatusTypeDef robostride_write_float(uint16_t index, float value);
+static HAL_StatusTypeDef robostride_write_u8(uint16_t index, uint8_t value);
+static inline float be_bytes_to_float(const uint8_t *p);
+static HAL_StatusTypeDef robostride_enable(void);
+static HAL_StatusTypeDef robostride_stop(void);
+/* USER CODE BEGIN 0 */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static HAL_StatusTypeDef robostride_enable(void)
+{
+    uint8_t data[8] = {0};
+    return robostride_send(RS_TYPE_ENABLE, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+}
+
+static HAL_StatusTypeDef robostride_stop(void)
+{
+    uint8_t data[8] = {0};
+    data[0] = 1;   // fault clearも兼ねる
+    return robostride_send(RS_TYPE_STOP, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+}
+
+static HAL_StatusTypeDef robostride_send(uint8_t type, uint16_t data_area, uint8_t motor_id, uint8_t data[8])
+{
+    FDCAN_TxHeaderTypeDef tx = {0};
+
+    tx.Identifier = ((uint32_t)type << 24) | ((uint32_t)data_area << 8) | motor_id;
+    tx.IdType = FDCAN_EXTENDED_ID;
+    tx.TxFrameType = FDCAN_DATA_FRAME;
+    tx.DataLength = FDCAN_DLC_BYTES_8;
+    tx.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+    tx.BitRateSwitch = FDCAN_BRS_OFF;
+    tx.FDFormat = FDCAN_CLASSIC_CAN;
+    tx.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+    tx.MessageMarker = 0;
+
+    HAL_StatusTypeDef st = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan3, &tx, data);
+    rs_last_tx_status = st;
+    rs_last_tx_id = tx.Identifier;
+    if (st == HAL_OK) {
+        tx_success_count++;
+    } else {
+        tx_fail_count++;
+    }
+    return st;
+}
+
+static void put_u16_le(uint8_t *p, uint16_t v)
+{
+    p[0] = v & 0xFF;
+    p[1] = (v >> 8) & 0xFF;
+}
+
+static void put_float_le(uint8_t *p, float v)
+{
+    memcpy(p, &v, 4);
+}
+
+static HAL_StatusTypeDef robostride_write_float(uint16_t index, float value)
+{
+    uint8_t data[8] = {0};
+
+    put_u16_le(&data[0], index);
+    put_float_le(&data[4], value);
+
+    return robostride_send(RS_TYPE_WRITE_PARAM, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+}
+
+static HAL_StatusTypeDef robostride_write_u8(uint16_t index, uint8_t value)
+{
+    uint8_t data[8] = {0};
+
+    put_u16_le(&data[0], index);
+    data[4] = value;
+
+    return robostride_send(RS_TYPE_WRITE_PARAM, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+}
 
 static inline float be_bytes_to_float(const uint8_t *p)
 {
@@ -303,7 +397,43 @@ int main(void)
   HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
   HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, 0, 0); 
   HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
-  HAL_TIM_Base_Start_IT(&htim6);
+  uint8_t data[8] = {0};
+
+/* stop */
+data[0] = 1;
+robostride_send(0x04, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+HAL_Delay(100);
+
+/* run_mode = 2 */
+memset(data, 0, 8);
+data[0] = 0x05;
+data[1] = 0x70;
+data[4] = 2;
+robostride_send(0x12, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+HAL_Delay(100);
+
+/* enable */
+memset(data, 0, 8);
+robostride_send(0x03, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+HAL_Delay(100);
+
+/* limit_cur = 1.0f */
+memset(data, 0, 8);
+data[0] = 0x18;
+data[1] = 0x70;
+float limit_cur = 1.0f;
+memcpy(&data[4], &limit_cur, 4);
+robostride_send(0x12, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+HAL_Delay(50);
+
+/* spd_ref = 0.5 rad/s */
+memset(data, 0, 8);
+data[0] = 0x0A;
+data[1] = 0x70;
+float spd = 0.5f;
+memcpy(&data[4], &spd, 4);
+robostride_send(0x12, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+  //HAL_TIM_Base_Start_IT(&htim6);
 
   /* USER CODE END 2 */
 
@@ -314,25 +444,29 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    FDCAN_ProtocolStatusTypeDef pstatus;
-    FDCAN_ErrorCountersTypeDef  ecounters;
-    HAL_FDCAN_GetProtocolStatus(&hfdcan3, &pstatus);
-    HAL_FDCAN_GetErrorCounters(&hfdcan3, &ecounters);
-
-    printf("tx_ok=%lu tx_fail=%lu BusOff=%d ErrPassive=%d TEC=%lu REC=%lu\r\n",
-           tx_success_count, tx_fail_count,
-           pstatus.BusOff, pstatus.ErrorPassive,
-           (unsigned long)ecounters.TxErrorCnt, (unsigned long)ecounters.RxErrorCnt);
-
-    printf("tx_ok=%lu tx_fail=%lu vel_rx=%lu vx=%.3f vy=%.3f omega=%.3f w0=%d w1=%d w2=%d\r\n",
-   tx_success_count, tx_fail_count, velocity_rx_count,
-   rx_vx, rx_vy, rx_omega,
-   (int)wheel_speed_target[0], (int)wheel_speed_target[1], (int)wheel_speed_target[2]);
     static uint32_t last_rx_count = 0;
     static uint32_t last_print_tick = 0;
 
     if (HAL_GetTick() - last_print_tick >= 300)
     {
+      FDCAN_ProtocolStatusTypeDef pstatus3;
+      FDCAN_ErrorCountersTypeDef  ecounters3;
+      HAL_FDCAN_GetProtocolStatus(&hfdcan3, &pstatus3);
+      HAL_FDCAN_GetErrorCounters(&hfdcan3, &ecounters3);
+
+      printf("RS/FDCAN3: tx_ok=%lu tx_fail=%lu last_st=%d last_id=0x%08lX BusOff=%d ErrPassive=%d Warning=%d TEC=%lu REC=%lu LEC=%lu Act=%lu\r\n",
+           (unsigned long)tx_success_count,
+           (unsigned long)tx_fail_count,
+           (int)rs_last_tx_status,
+           (unsigned long)rs_last_tx_id,
+           pstatus3.BusOff,
+           pstatus3.ErrorPassive,
+           pstatus3.Warning,
+           (unsigned long)ecounters3.TxErrorCnt,
+           (unsigned long)ecounters3.RxErrorCnt,
+           (unsigned long)pstatus3.LastErrorCode,
+           (unsigned long)pstatus3.Activity);
+
       FDCAN_ProtocolStatusTypeDef pstatus1;
       FDCAN_ErrorCountersTypeDef  ecounters1;
       HAL_FDCAN_GetProtocolStatus(&hfdcan1, &pstatus1);
@@ -354,11 +488,6 @@ int main(void)
       (int64_t)velocity_rx_count, (int64_t)rx_vx, (int64_t)rx_vy, (int64_t)rx_omega);
       last_rx_count = velocity_rx_count;
     }
-    printf("CAN0x100 RX#%lu vx=%ld vy=%ld omega=%ld (x1000)\r\n",   // ← ループの外
-       (unsigned long)velocity_rx_count,
-       (long)(rx_vx    * 1000.0f),
-       (long)(rx_vy    * 1000.0f),
-       (long)(rx_omega * 1000.0f));
   }
   
   /* USER CODE END 3 */
