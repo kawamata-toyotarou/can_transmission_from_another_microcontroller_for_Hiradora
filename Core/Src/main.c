@@ -74,6 +74,9 @@ typedef struct __attribute__((packed)) {
 #define RS_PARAM_LIMIT_CUR   0x7018u // 電流制限のパラメータ番号
 #define RS_PARAM_ACC_RAD     0x7022u // 加速度制限のパラメータ番号
 #define RS_PARAM_SPD_REF     0x700Au // 目標速度のパラメータ番号
+
+#define RS_PARAM_LOC_REF    0x7016u
+#define RS_PARAM_LIMIT_SPD  0x7017u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -107,6 +110,9 @@ volatile uint32_t velocity_rx_count = 0;
 volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};
 
 volatile float robostride_spd_ref = 2.0f;
+volatile float robostride_pos_ref = 0.5f;
+volatile int8_t control_mode = 1;          // 0なら速度制御 1なら位置制御
+volatile uint16_t rs_last_param_index = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -195,6 +201,8 @@ static HAL_StatusTypeDef robostride_write_float(uint16_t index, float value)
     put_u16_le(&data[0], index);
     put_float_le(&data[4], value);
 
+    rs_last_param_index = index;
+
     return robostride_send(RS_TYPE_WRITE_PARAM, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
 }
 
@@ -204,6 +212,8 @@ static HAL_StatusTypeDef robostride_write_u8(uint16_t index, uint8_t value)
 
     put_u16_le(&data[0], index);
     data[4] = value;
+
+    rs_last_param_index = index;
 
     return robostride_send(RS_TYPE_WRITE_PARAM, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
 }
@@ -361,7 +371,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         if (++tim6_div >= 20)   // 20msごとくらい
         {
               tim6_div = 0;
-              robostride_write_float(RS_PARAM_SPD_REF, robostride_spd_ref);
+
+              if (control_mode == 0) {
+                robostride_write_float(RS_PARAM_SPD_REF, robostride_spd_ref);
+              }
+              else if (control_mode == 1) {
+                robostride_write_float(RS_PARAM_LOC_REF, robostride_pos_ref);
+              }
+              
         }
     }
 }
@@ -416,17 +433,39 @@ int main(void)
   HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
   uint8_t data[8] = {0};
 
-  robostride_stop();
-  HAL_Delay(100);
+  if (control_mode == 0) {
 
-  robostride_write_u8(RS_PARAM_RUN_MODE, 2);
-  HAL_Delay(100);
+    robostride_stop();
+    HAL_Delay(100);
 
-  robostride_write_float(RS_PARAM_LIMIT_CUR, 1.0f);
-  HAL_Delay(50);
+    robostride_write_u8(RS_PARAM_RUN_MODE, 2);
+    HAL_Delay(100);
 
-  robostride_enable();
-  HAL_Delay(100);
+    robostride_write_float(RS_PARAM_LIMIT_CUR, 1.0f);
+    HAL_Delay(50);
+
+    robostride_enable();
+    HAL_Delay(100);
+
+  }
+  else if (control_mode == 1) {
+
+    robostride_stop();
+    HAL_Delay(100);
+
+    robostride_write_u8(RS_PARAM_RUN_MODE, 5);       // 1 = 位置制御
+    HAL_Delay(100);
+
+    robostride_write_float(RS_PARAM_LIMIT_CUR, 1.0f);
+    HAL_Delay(50);
+
+    robostride_write_float(RS_PARAM_LIMIT_SPD, 1.0f); // 最大速度 1rad/s
+    HAL_Delay(50);
+
+    robostride_enable();
+    HAL_Delay(100);
+
+  }
 
   HAL_TIM_Base_Start_IT(&htim6);
 
@@ -474,8 +513,16 @@ int main(void)
            (unsigned long)pstatus1.LastErrorCode,
            (unsigned long)pstatus1.Activity);
 
+      printf("mode=%d last_index=0x%04X pos_ref=%d spd_ref=%d\r\n",
+       control_mode,
+       rs_last_param_index,
+       (int)(robostride_pos_ref * 1000.0f),
+       (int)(robostride_spd_ref * 1000.0f));
+
       last_print_tick = HAL_GetTick();
     }
+
+    
 
     if (velocity_rx_count != last_rx_count)
     {
