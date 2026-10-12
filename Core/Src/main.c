@@ -61,19 +61,19 @@ typedef struct __attribute__((packed)) {
 #define WHEEL1_ANGLE_RAD    ((float)M_PI / 3.0f)          // -60°  
 #define WHEEL2_ANGLE_RAD    ((float)M_PI)  
 
-#define MAX_WHEEL_RPM 5000.0f  // doc1/2側のクリップ値と合わせる
+#define MAX_WHEEL_RPM 5000.0f        // doc1/2側のクリップ値と合わせる
 
-#define ROBOSTRIDE_HOST_ID   0xFDu
-#define ROBOSTRIDE_MOTOR_ID  0x01u
+#define ROBOSTRIDE_HOST_ID   0xFDu   // stm32側のID
+#define ROBOSTRIDE_MOTOR_ID  0x01u   // robostride側のID
 
-#define RS_TYPE_ENABLE       0x03u
-#define RS_TYPE_STOP         0x04u
-#define RS_TYPE_WRITE_PARAM  0x12u
+#define RS_TYPE_ENABLE       0x03u   // モーターを有効化する命令
+#define RS_TYPE_STOP         0x04u   // モーター停止命令
+#define RS_TYPE_WRITE_PARAM  0x12u   // パラメータを書き換える命令
 
-#define RS_PARAM_RUN_MODE    0x7005u
-#define RS_PARAM_LIMIT_CUR   0x7018u
-#define RS_PARAM_ACC_RAD     0x7022u
-#define RS_PARAM_SPD_REF     0x700Au
+#define RS_PARAM_RUN_MODE    0x7005u // 制御モードを指定するパラメータ番号
+#define RS_PARAM_LIMIT_CUR   0x7018u // 電流制限のパラメータ番号
+#define RS_PARAM_ACC_RAD     0x7022u // 加速度制限のパラメータ番号
+#define RS_PARAM_SPD_REF     0x700Au // 目標速度のパラメータ番号
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -105,6 +105,8 @@ volatile float rx_omega = 0.0f;   /* rad/s */
 volatile uint32_t velocity_rx_count = 0;
 
 volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};
+
+volatile float robostride_spd_ref = 2.0f;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -131,12 +133,15 @@ static HAL_StatusTypeDef robostride_stop(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/*モーターを動かしてよい状態にする関数*/
 static HAL_StatusTypeDef robostride_enable(void)
 {
     uint8_t data[8] = {0};
     return robostride_send(RS_TYPE_ENABLE, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
 }
 
+/*モーターを止める関数*/
 static HAL_StatusTypeDef robostride_stop(void)
 {
     uint8_t data[8] = {0};
@@ -144,14 +149,15 @@ static HAL_StatusTypeDef robostride_stop(void)
     return robostride_send(RS_TYPE_STOP, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
 }
 
+/*送信関数 引数typeはRoboStrideの通信タイプ data_areaはCAN拡張IDの中央部分に入れる値*/
 static HAL_StatusTypeDef robostride_send(uint8_t type, uint16_t data_area, uint8_t motor_id, uint8_t data[8])
 {
     FDCAN_TxHeaderTypeDef tx = {0};
 
-    tx.Identifier = ((uint32_t)type << 24) | ((uint32_t)data_area << 8) | motor_id;
-    tx.IdType = FDCAN_EXTENDED_ID;
+    tx.Identifier = ((uint32_t)type << 24) | ((uint32_t)data_area << 8) | motor_id; //RoboStride用の29bit拡張CANIDを作成
+    tx.IdType = FDCAN_EXTENDED_ID;                                                  //ロボマスではstandardidだったがロボストライドでは拡張id
     tx.TxFrameType = FDCAN_DATA_FRAME;
-    tx.DataLength = FDCAN_DLC_BYTES_8;
+    tx.DataLength = FDCAN_DLC_BYTES_8;                                              //RoboStrideの命令は基本8バイト
     tx.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
     tx.BitRateSwitch = FDCAN_BRS_OFF;
     tx.FDFormat = FDCAN_CLASSIC_CAN;
@@ -169,11 +175,13 @@ static HAL_StatusTypeDef robostride_send(uint8_t type, uint16_t data_area, uint8
     return st;
 }
 
+/*16bitのデータを2つに分解する関数*/
 static void put_u16_le(uint8_t *p, uint16_t v)
 {
     p[0] = v & 0xFF;
     p[1] = (v >> 8) & 0xFF;
 }
+
 
 static void put_float_le(uint8_t *p, float v)
 {
@@ -340,11 +348,20 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM6)
     {
-        for (uint8_t i = 0; i < 3; i++)
+        //とりあえず今はロボストライド単体で動かすのでerrorメッセージを返してしまうからコメントアウト
+        // for (uint8_t i = 0; i < 3; i++)
+        // {
+        //     HAL_StatusTypeDef st = send_motor_cmd(i, wheel_speed_target[i],
+        //                                            goal_pid_mode, goal_control_motor_mode);
+        //     if (st == HAL_OK) { tx_success_count++; } else { tx_fail_count++; }
+        // }
+
+        static uint32_t tim6_div = 0;
+
+        if (++tim6_div >= 20)   // 20msごとくらい
         {
-            HAL_StatusTypeDef st = send_motor_cmd(i, wheel_speed_target[i],
-                                                   goal_pid_mode, goal_control_motor_mode);
-            if (st == HAL_OK) { tx_success_count++; } else { tx_fail_count++; }
+              tim6_div = 0;
+              robostride_write_float(RS_PARAM_SPD_REF, robostride_spd_ref);
         }
     }
 }
@@ -399,41 +416,19 @@ int main(void)
   HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
   uint8_t data[8] = {0};
 
-/* stop */
-data[0] = 1;
-robostride_send(0x04, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
-HAL_Delay(100);
+  robostride_stop();
+  HAL_Delay(100);
 
-/* run_mode = 2 */
-memset(data, 0, 8);
-data[0] = 0x05;
-data[1] = 0x70;
-data[4] = 2;
-robostride_send(0x12, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
-HAL_Delay(100);
+  robostride_write_u8(RS_PARAM_RUN_MODE, 2);
+  HAL_Delay(100);
 
-/* enable */
-memset(data, 0, 8);
-robostride_send(0x03, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
-HAL_Delay(100);
+  robostride_write_float(RS_PARAM_LIMIT_CUR, 1.0f);
+  HAL_Delay(50);
 
-/* limit_cur = 1.0f */
-memset(data, 0, 8);
-data[0] = 0x18;
-data[1] = 0x70;
-float limit_cur = 1.0f;
-memcpy(&data[4], &limit_cur, 4);
-robostride_send(0x12, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
-HAL_Delay(50);
+  robostride_enable();
+  HAL_Delay(100);
 
-/* spd_ref = 0.5 rad/s */
-memset(data, 0, 8);
-data[0] = 0x0A;
-data[1] = 0x70;
-float spd = 0.5f;
-memcpy(&data[4], &spd, 4);
-robostride_send(0x12, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
-  //HAL_TIM_Base_Start_IT(&htim6);
+  HAL_TIM_Base_Start_IT(&htim6);
 
   /* USER CODE END 2 */
 
