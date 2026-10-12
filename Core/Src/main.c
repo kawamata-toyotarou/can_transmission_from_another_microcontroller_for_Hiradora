@@ -75,8 +75,8 @@ typedef struct __attribute__((packed)) {
 #define RS_PARAM_ACC_RAD     0x7022u // 加速度制限のパラメータ番号
 #define RS_PARAM_SPD_REF     0x700Au // 目標速度のパラメータ番号
 
-#define RS_PARAM_LOC_REF    0x7016u
-#define RS_PARAM_LIMIT_SPD  0x7017u
+#define RS_PARAM_LOC_REF    0x7016u  // 位置制御中の最大速度制限
+#define RS_PARAM_LIMIT_SPD  0x7017u  // 目標位置
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -453,7 +453,7 @@ int main(void)
     robostride_stop();
     HAL_Delay(100);
 
-    robostride_write_u8(RS_PARAM_RUN_MODE, 5);       // 1 = 位置制御
+    robostride_write_u8(RS_PARAM_RUN_MODE, 5);       // 5で位置制御になる
     HAL_Delay(100);
 
     robostride_write_float(RS_PARAM_LIMIT_CUR, 1.0f);
