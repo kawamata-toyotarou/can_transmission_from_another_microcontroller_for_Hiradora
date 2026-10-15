@@ -64,7 +64,10 @@ typedef struct __attribute__((packed)) {
 #define MAX_WHEEL_RPM 5000.0f        // doc1/2側のクリップ値と合わせる
 
 #define ROBOSTRIDE_HOST_ID   0xFDu   // stm32側のID
-#define ROBOSTRIDE_MOTOR_ID  0x01u   // robostride側のID
+
+#define ROBOSTRIDE_MOTOR_ID_1  0x01u   // robostride側のID
+#define ROBOSTRIDE_MOTOR_ID_2  0x02u
+#define ROBOSTRIDE_MOTOR_ID_3  0x03u
 
 #define RS_TYPE_ENABLE       0x03u   // モーターを有効化する命令
 #define RS_TYPE_STOP         0x04u   // モーター停止命令
@@ -75,8 +78,8 @@ typedef struct __attribute__((packed)) {
 #define RS_PARAM_ACC_RAD     0x7022u // 加速度制限のパラメータ番号
 #define RS_PARAM_SPD_REF     0x700Au // 目標速度のパラメータ番号
 
-#define RS_PARAM_LOC_REF    0x7016u  // 位置制御中の最大速度制限
-#define RS_PARAM_LIMIT_SPD  0x7017u  // 目標位置
+#define RS_PARAM_LOC_REF    0x7016u  // 目標位置
+#define RS_PARAM_LIMIT_SPD  0x7017u  // 位置制御中の最大速度制限
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -107,11 +110,16 @@ volatile float rx_vy    = 0.0f;   /* m/s */
 volatile float rx_omega = 0.0f;   /* rad/s */
 volatile uint32_t velocity_rx_count = 0;
 
-volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};
+const uint8_t robostride_motor_id[3] = {
+    ROBOSTRIDE_MOTOR_ID_1,
+    ROBOSTRIDE_MOTOR_ID_2,
+    ROBOSTRIDE_MOTOR_ID_3
+};
 
-volatile float robostride_spd_ref = 2.0f;
-volatile float robostride_pos_ref = 0.5f;
-volatile int8_t control_mode = 1;          // 0なら速度制御 1なら位置制御
+volatile int8_t control_mode[3] = {1, 1, 1};   // 0=速度, 1=位置
+volatile float robostride_spd_ref[3] = {2.0f, 2.0f, 2.0f};
+volatile float robostride_pos_ref[3] = {0.1f, 0.1f, 0.1f};
+volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};
 volatile uint16_t rs_last_param_index = 0;
 /* USER CODE END PV */
 
@@ -125,15 +133,15 @@ static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static void FDCAN1_ConfigFilterAndStart(void);
 static void compute_wheel_targets(float vx, float vy, float omega);
-static inline float be_bytes_to_float(const uint8_t *p);
+
 static HAL_StatusTypeDef robostride_send(uint8_t type, uint16_t data_area, uint8_t motor_id, uint8_t data[8]);
 static void put_u16_le(uint8_t *p, uint16_t v);
 static void put_float_le(uint8_t *p, float v);
-static HAL_StatusTypeDef robostride_write_float(uint16_t index, float value);
-static HAL_StatusTypeDef robostride_write_u8(uint16_t index, uint8_t value);
 static inline float be_bytes_to_float(const uint8_t *p);
-static HAL_StatusTypeDef robostride_enable(void);
-static HAL_StatusTypeDef robostride_stop(void);
+static HAL_StatusTypeDef robostride_write_float(uint8_t motor_id, uint16_t index, float value);
+static HAL_StatusTypeDef robostride_write_u8(uint8_t motor_id, uint16_t index, uint8_t value);
+static HAL_StatusTypeDef robostride_enable(uint8_t motor_id);
+static HAL_StatusTypeDef robostride_stop(uint8_t motor_id);
 /* USER CODE BEGIN 0 */
 /* USER CODE END PFP */
 
@@ -141,18 +149,18 @@ static HAL_StatusTypeDef robostride_stop(void);
 /* USER CODE BEGIN 0 */
 
 /*モーターを動かしてよい状態にする関数*/
-static HAL_StatusTypeDef robostride_enable(void)
+static HAL_StatusTypeDef robostride_enable(uint8_t motor_id)
 {
     uint8_t data[8] = {0};
-    return robostride_send(RS_TYPE_ENABLE, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+    return robostride_send(RS_TYPE_ENABLE, ROBOSTRIDE_HOST_ID, motor_id, data);
 }
 
-/*モーターを止める関数*/
-static HAL_StatusTypeDef robostride_stop(void)
+/*モーターを停止させる関数*/
+static HAL_StatusTypeDef robostride_stop(uint8_t motor_id)
 {
     uint8_t data[8] = {0};
-    data[0] = 1;   // fault clearも兼ねる
-    return robostride_send(RS_TYPE_STOP, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+    data[0] = 1;
+    return robostride_send(RS_TYPE_STOP, ROBOSTRIDE_HOST_ID, motor_id, data);
 }
 
 /*送信関数 引数typeはRoboStrideの通信タイプ data_areaはCAN拡張IDの中央部分に入れる値*/
@@ -188,13 +196,14 @@ static void put_u16_le(uint8_t *p, uint16_t v)
     p[1] = (v >> 8) & 0xFF;
 }
 
-
+/*floatの値をRoboStrideに送る形に詰めるための関数 pにvの4バイトがコピーされている*/
 static void put_float_le(uint8_t *p, float v)
 {
     memcpy(p, &v, 4);
 }
 
-static HAL_StatusTypeDef robostride_write_float(uint16_t index, float value)
+/*floatデータから送信データを作成し、送信する関数*/
+static HAL_StatusTypeDef robostride_write_float(uint8_t motor_id, uint16_t index, float value)
 {
     uint8_t data[8] = {0};
 
@@ -203,21 +212,22 @@ static HAL_StatusTypeDef robostride_write_float(uint16_t index, float value)
 
     rs_last_param_index = index;
 
-    return robostride_send(RS_TYPE_WRITE_PARAM, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+    return robostride_send(RS_TYPE_WRITE_PARAM, ROBOSTRIDE_HOST_ID, motor_id, data);
 }
 
-static HAL_StatusTypeDef robostride_write_u8(uint16_t index, uint8_t value)
+/*intデータから送信データを作成し、送信する関数*/
+static HAL_StatusTypeDef robostride_write_u8(uint8_t motor_id, uint16_t index, uint8_t value)
 {
     uint8_t data[8] = {0};
 
     put_u16_le(&data[0], index);
     data[4] = value;
-
     rs_last_param_index = index;
 
-    return robostride_send(RS_TYPE_WRITE_PARAM, ROBOSTRIDE_HOST_ID, ROBOSTRIDE_MOTOR_ID, data);
+    return robostride_send(RS_TYPE_WRITE_PARAM, ROBOSTRIDE_HOST_ID, motor_id, data);
 }
 
+/*受信した4バイトのデータを float に戻す関数*/
 static inline float be_bytes_to_float(const uint8_t *p)
 {
     union { uint32_t u; float f; } conv;
@@ -370,16 +380,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
         if (++tim6_div >= 20)   // 20msごとくらい
         {
-              tim6_div = 0;
+            tim6_div = 0;
 
-              if (control_mode == 0) {
-                robostride_write_float(RS_PARAM_SPD_REF, robostride_spd_ref);
-              }
-              else if (control_mode == 1) {
-                robostride_write_float(RS_PARAM_LOC_REF, robostride_pos_ref);
-              }
-              
+          for (uint8_t i = 0; i < 3; i++) {
+            uint8_t id = robostride_motor_id[i];
+
+            if (control_mode[i] == 0) {
+              robostride_write_float(id, RS_PARAM_SPD_REF, robostride_spd_ref[i]);
+            }
+            else if (control_mode[i] == 1) {
+              robostride_write_float(id, RS_PARAM_LOC_REF, robostride_pos_ref[i]);
+            }
+          }
+
         }
+
     }
 }
 
@@ -433,38 +448,31 @@ int main(void)
   HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
   uint8_t data[8] = {0};
 
-  if (control_mode == 0) {
+  for (uint8_t i = 0; i < 3; i++) {
+    uint8_t id = robostride_motor_id[i];
 
-    robostride_stop();
+    robostride_stop(id);
     HAL_Delay(100);
 
-    robostride_write_u8(RS_PARAM_RUN_MODE, 2);
+    if (control_mode[i] == 0) {
+        robostride_write_u8(id, RS_PARAM_RUN_MODE, 2);  // 速度
+        HAL_Delay(100);
+
+        robostride_write_float(id, RS_PARAM_LIMIT_CUR, 1.0f);
+        HAL_Delay(50);
+    } else if (control_mode[i] == 1) {
+        robostride_write_u8(id, RS_PARAM_RUN_MODE, 5);  // 位置
+        HAL_Delay(100);
+
+        robostride_write_float(id, RS_PARAM_LIMIT_CUR, 1.0f);
+        HAL_Delay(50);
+
+        robostride_write_float(id, RS_PARAM_LIMIT_SPD, 1.0f);
+        HAL_Delay(50);
+    }
+
+    robostride_enable(id);
     HAL_Delay(100);
-
-    robostride_write_float(RS_PARAM_LIMIT_CUR, 1.0f);
-    HAL_Delay(50);
-
-    robostride_enable();
-    HAL_Delay(100);
-
-  }
-  else if (control_mode == 1) {
-
-    robostride_stop();
-    HAL_Delay(100);
-
-    robostride_write_u8(RS_PARAM_RUN_MODE, 5);       // 5で位置制御になる
-    HAL_Delay(100);
-
-    robostride_write_float(RS_PARAM_LIMIT_CUR, 1.0f);
-    HAL_Delay(50);
-
-    robostride_write_float(RS_PARAM_LIMIT_SPD, 1.0f); // 最大速度 1rad/s
-    HAL_Delay(50);
-
-    robostride_enable();
-    HAL_Delay(100);
-
   }
 
   HAL_TIM_Base_Start_IT(&htim6);
@@ -513,11 +521,15 @@ int main(void)
            (unsigned long)pstatus1.LastErrorCode,
            (unsigned long)pstatus1.Activity);
 
-      printf("mode=%d last_index=0x%04X pos_ref=%d spd_ref=%d\r\n",
-       control_mode,
+      printf("mode=[%d,%d,%d] last_index=0x%04X pos_ref=[%d,%d,%d] spd_ref=[%d,%d,%d]\r\n",
+       control_mode[0], control_mode[1], control_mode[2],
        rs_last_param_index,
-       (int)(robostride_pos_ref * 1000.0f),
-       (int)(robostride_spd_ref * 1000.0f));
+       (int)(robostride_pos_ref[0] * 1000.0f),
+       (int)(robostride_pos_ref[1] * 1000.0f),
+       (int)(robostride_pos_ref[2] * 1000.0f),
+       (int)(robostride_spd_ref[0] * 1000.0f),
+       (int)(robostride_spd_ref[1] * 1000.0f),
+       (int)(robostride_spd_ref[2] * 1000.0f));
 
       last_print_tick = HAL_GetTick();
     }
