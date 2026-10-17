@@ -66,8 +66,8 @@ typedef struct __attribute__((packed)) {
 #define ROBOSTRIDE_HOST_ID   0xFDu   // stm32側のID
 
 #define ROBOSTRIDE_MOTOR_ID_1  0x01u   // robostride側のID
-#define ROBOSTRIDE_MOTOR_ID_2  0x02u
-#define ROBOSTRIDE_MOTOR_ID_3  0x03u
+#define ROBOSTRIDE_MOTOR_ID_2  0x01u
+#define ROBOSTRIDE_MOTOR_ID_3  0x0127u
 
 #define RS_TYPE_ENABLE       0x03u   // モーターを有効化する命令
 #define RS_TYPE_STOP         0x04u   // モーター停止命令
@@ -80,6 +80,8 @@ typedef struct __attribute__((packed)) {
 
 #define RS_PARAM_LOC_REF    0x7016u  // 目標位置
 #define RS_PARAM_LIMIT_SPD  0x7017u  // 位置制御中の最大速度制限
+
+#define RS_ID_SCAN_ONLY  0  // 1: ID確認、0: 通常動作
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -142,11 +144,109 @@ static HAL_StatusTypeDef robostride_write_float(uint8_t motor_id, uint16_t index
 static HAL_StatusTypeDef robostride_write_u8(uint8_t motor_id, uint16_t index, uint8_t value);
 static HAL_StatusTypeDef robostride_enable(uint8_t motor_id);
 static HAL_StatusTypeDef robostride_stop(uint8_t motor_id);
+static void robostride_scan_ids(void);
 /* USER CODE BEGIN 0 */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/* CAN3 startup error diagnostics: no CAN transmission or automatic recovery. */
+typedef struct {
+    uint32_t tick;
+    uint32_t psr;
+    uint32_t ecr;
+    uint32_t hal_error;
+} CAN3_DiagEvent;
+
+#define CAN3_DIAG_CAPACITY 16U
+static volatile CAN3_DiagEvent can3_diag_events[CAN3_DIAG_CAPACITY];
+static volatile uint32_t can3_diag_count;
+static volatile uint32_t can3_diag_busoff_seen;
+static volatile uint32_t can3_diag_busoff_psr;
+static volatile uint32_t can3_diag_busoff_ecr;
+
+static void CAN3_DiagCapture(FDCAN_HandleTypeDef *hfdcan)
+{
+    if (hfdcan->Instance != FDCAN3) {
+        return;
+    }
+
+    /* Reading PSR acknowledges the last error code. Preserve this first read. */
+    uint32_t psr = hfdcan->Instance->PSR;
+    uint32_t ecr = hfdcan->Instance->ECR;
+    uint32_t lec = psr & FDCAN_PSR_LEC;
+
+    if ((psr & FDCAN_PSR_BO) != 0U && can3_diag_busoff_seen == 0U) {
+        can3_diag_busoff_psr = psr;
+        can3_diag_busoff_ecr = ecr;
+        can3_diag_busoff_seen = 1U;
+    }
+
+    if (lec == 0U || lec == 7U) {
+        return;
+    }
+
+    uint32_t index = can3_diag_count;
+    if (index < CAN3_DIAG_CAPACITY) {
+        can3_diag_events[index].tick = HAL_GetTick();
+        can3_diag_events[index].psr = psr;
+        can3_diag_events[index].ecr = ecr;
+        can3_diag_events[index].hal_error = hfdcan->ErrorCode;
+        can3_diag_count = index + 1U;
+    }
+}
+
+void HAL_FDCAN_ErrorCallback(FDCAN_HandleTypeDef *hfdcan)
+{
+    CAN3_DiagCapture(hfdcan);
+}
+
+void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t ErrorStatusITs)
+{
+    (void)ErrorStatusITs;
+    CAN3_DiagCapture(hfdcan);
+}
+
+/* Call after FDCAN3_ConfigAndStart(), before the first motor command. */
+static HAL_StatusTypeDef CAN3_DiagEnable(void)
+{
+    return HAL_FDCAN_ActivateNotification(&hfdcan3,
+        FDCAN_IT_ARB_PROTOCOL_ERROR | FDCAN_IT_DATA_PROTOCOL_ERROR |
+        FDCAN_IT_BUS_OFF | FDCAN_IT_ERROR_PASSIVE | FDCAN_IT_ERROR_WARNING,
+        0U);
+}
+
+/* Print only from main context, including scan failure and idle logging. */
+static void CAN3_DiagPrint(void)
+{
+    static uint32_t printed;
+    static uint32_t busoff_printed;
+    uint32_t count = can3_diag_count;
+
+    while (printed < count) {
+        uint32_t i = printed;
+        uint32_t psr = can3_diag_events[i].psr;
+        uint32_t ecr = can3_diag_events[i].ecr;
+        printf("CAN3_FIRST[%lu] t=%lu LEC=%lu TEC=%lu REC=%lu "
+               "PSR=0x%08lX ECR=0x%08lX HAL=0x%08lX\r\n",
+               (unsigned long)i,
+               (unsigned long)can3_diag_events[i].tick,
+               (unsigned long)(psr & FDCAN_PSR_LEC),
+               (unsigned long)((ecr & FDCAN_ECR_TEC) >> FDCAN_ECR_TEC_Pos),
+               (unsigned long)((ecr & FDCAN_ECR_REC) >> FDCAN_ECR_REC_Pos),
+               (unsigned long)psr, (unsigned long)ecr,
+               (unsigned long)can3_diag_events[i].hal_error);
+        printed++;
+    }
+
+    if (can3_diag_busoff_seen != 0U && busoff_printed == 0U) {
+        printf("CAN3_BUSOFF PSR=0x%08lX ECR=0x%08lX\r\n",
+               (unsigned long)can3_diag_busoff_psr,
+               (unsigned long)can3_diag_busoff_ecr);
+        busoff_printed = 1U;
+    }
+}
 
 /*モーターを動かしてよい状態にする関数*/
 static HAL_StatusTypeDef robostride_enable(uint8_t motor_id)
@@ -325,16 +425,146 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
     velocity_rx_count++;
 }
 
-static void FDCAN3_ConfigAndStart(void)  
+// static void FDCAN3_ConfigAndStart(void)  
+// {
+//     FDCAN_FilterTypeDef sFilterConfig = {0};
+
+//     /* 基本的に送信用のリポジトリなのでフィルタは全拒否のグローバル設定 */
+//     HAL_FDCAN_ConfigGlobalFilter(&hfdcan3, FDCAN_REJECT, FDCAN_REJECT,
+//                                   FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE);
+
+//     if (HAL_FDCAN_Start(&hfdcan3) != HAL_OK)   //  hfdcan3
+//     {
+//         Error_Handler();
+//     }
+// }
+
+static void robostride_scan_ids(void)
 {
-    FDCAN_FilterTypeDef sFilterConfig = {0};
+    uint8_t seen[256] = {0};
+    uint16_t found_count = 0;
 
-    /* 基本的に送信用のリポジトリなのでフィルタは全拒否のグローバル設定 */
-    HAL_FDCAN_ConfigGlobalFilter(&hfdcan3, FDCAN_REJECT, FDCAN_REJECT,
-                                  FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE);
+    printf("\r\n=== RobStride ID scan start ===\r\n");
 
-    if (HAL_FDCAN_Start(&hfdcan3) != HAL_OK)   //  hfdcan3
-    {
+    /* 古い受信データを捨てる */
+    while (HAL_FDCAN_GetRxFifoFillLevel(
+               &hfdcan3, FDCAN_RX_FIFO0) > 0U) {
+        FDCAN_RxHeaderTypeDef header;
+        uint8_t data[64];
+
+        if (HAL_FDCAN_GetRxMessage(
+                &hfdcan3, FDCAN_RX_FIFO0,
+                &header, data) != HAL_OK) {
+            break;
+        }
+    }
+
+    /* 8bitのID候補を順番に問い合わせる */
+    for (uint16_t candidate = 0; candidate < 256; candidate++) {
+        uint8_t request[8] = {0};
+
+        /* 通信タイプ0：ID取得。ID変更やEnableは送らない */
+        HAL_StatusTypeDef st = robostride_send(
+            0x00,
+            ROBOSTRIDE_HOST_ID,
+            (uint8_t)candidate,
+            request);
+
+        if (st != HAL_OK) {
+            CAN3_DiagPrint();
+            printf("Scan TX failed: candidate=%u status=%d\r\n",
+                   (unsigned int)candidate, (int)st);
+            return;
+        }
+
+        uint32_t started = HAL_GetTick();
+
+        /* 各IDについて約30ms応答を待つ */
+        while ((uint32_t)(HAL_GetTick() - started) < 30U) {
+            while (HAL_FDCAN_GetRxFifoFillLevel(
+                       &hfdcan3, FDCAN_RX_FIFO0) > 0U) {
+                FDCAN_RxHeaderTypeDef header;
+                uint8_t data[64];
+
+                if (HAL_FDCAN_GetRxMessage(
+                        &hfdcan3, FDCAN_RX_FIFO0,
+                        &header, data) != HAL_OK) {
+                    break;
+                }
+
+                if (header.IdType != FDCAN_EXTENDED_ID ||
+                    header.FDFormat != FDCAN_CLASSIC_CAN ||
+                    header.RxFrameType != FDCAN_DATA_FRAME ||
+                    header.DataLength != FDCAN_DLC_BYTES_8) {
+                    continue;
+                }
+
+                uint8_t type =
+                    (uint8_t)((header.Identifier >> 24) & 0x1FU);
+
+                /*
+                 * タイプ0のID応答：
+                 * 下位8bitが0xFE、bit23:8にモーターID
+                 */
+                if (type != 0x00U ||
+                    (header.Identifier & 0xFFU) != 0xFEU) {
+                    continue;
+                }
+
+                uint16_t motor_id =
+                    (uint16_t)((header.Identifier >> 8) & 0xFFFFU);
+
+                if (motor_id > 255U || seen[motor_id]) {
+                    continue;
+                }
+
+                seen[motor_id] = 1;
+                found_count++;
+
+                printf("FOUND: motor_id=%u (0x%02X)"
+                       " CAN_ID=0x%08lX UID=",
+                       (unsigned int)motor_id,
+                       (unsigned int)motor_id,
+                       (unsigned long)header.Identifier);
+
+                for (uint8_t i = 0; i < 8; i++) {
+                    printf("%02X", (unsigned int)data[i]);
+                }
+
+                printf("\r\n");
+            }
+
+            HAL_Delay(1);
+        }
+    }
+
+    printf("=== Scan finished: %u distinct ID(s) ===\r\n",
+           (unsigned int)found_count);
+}
+
+static void FDCAN3_ConfigAndStart(void)
+{
+    FDCAN_FilterTypeDef filter = {0};
+
+    filter.IdType       = FDCAN_EXTENDED_ID;
+    filter.FilterIndex  = 0;
+    filter.FilterType   = FDCAN_FILTER_MASK;
+    filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+    filter.FilterID1    = 0;
+    filter.FilterID2    = 0;  // マスク0：すべての拡張IDを通す
+
+    if (HAL_FDCAN_ConfigFilter(&hfdcan3, &filter) != HAL_OK) {
+        Error_Handler();
+    }
+
+    if (HAL_FDCAN_ConfigGlobalFilter(
+            &hfdcan3,
+            FDCAN_REJECT, FDCAN_REJECT,
+            FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE) != HAL_OK) {
+        Error_Handler();
+    }
+
+    if (HAL_FDCAN_Start(&hfdcan3) != HAL_OK) {
         Error_Handler();
     }
 }
@@ -441,18 +671,34 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   FDCAN3_ConfigAndStart();   
+  if (CAN3_DiagEnable() != HAL_OK) {
+    Error_Handler();
+  }
   FDCAN1_ConfigFilterAndStart();
   HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
   HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, 0, 0); 
   HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
+
+  if (RS_ID_SCAN_ONLY) {
+    HAL_Delay(200);
+
+    robostride_scan_ids();
+
+    /* 後ろのEnable・目標送信・TIM6開始には進まない */
+    while (1) {
+        HAL_Delay(1000);
+        CAN3_DiagPrint();
+    }
+  }
+
   uint8_t data[8] = {0};
 
   for (uint8_t i = 0; i < 3; i++) {
     uint8_t id = robostride_motor_id[i];
 
     robostride_stop(id);
-    HAL_Delay(100);
+    HAL_Delay(100 );
 
     if (control_mode[i] == 0) {
         robostride_write_u8(id, RS_PARAM_RUN_MODE, 2);  // 速度
@@ -491,6 +737,7 @@ int main(void)
 
     if (HAL_GetTick() - last_print_tick >= 300)
     {
+      CAN3_DiagPrint();
       FDCAN_ProtocolStatusTypeDef pstatus3;
       FDCAN_ErrorCountersTypeDef  ecounters3;
       HAL_FDCAN_GetProtocolStatus(&hfdcan3, &pstatus3);
