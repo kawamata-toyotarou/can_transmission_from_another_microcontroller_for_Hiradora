@@ -82,6 +82,9 @@ typedef struct __attribute__((packed)) {
 #define RS_PARAM_LIMIT_SPD  0x7017u  // 位置制御中の最大速度制限
 
 #define RS_ID_SCAN_ONLY  0  // 1: ID確認、0: 通常動作
+
+#define motor_0_Pin        GPIO_PIN_3
+#define motor_0_GPIO_Port  GPIOC
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -118,7 +121,7 @@ const uint8_t robostride_motor_id[3] = {
     ROBOSTRIDE_MOTOR_ID_3
 };
 
-volatile int8_t control_mode[3] = {1, 1, 1};   // 0=速度, 1=位置
+volatile int8_t control_mode[3] = {0, 0, 0};   // 0=速度, 1=位置
 volatile float robostride_spd_ref[3] = {2.0f, 2.0f, 2.0f};
 volatile float robostride_pos_ref[3] = {0.1f, 0.1f, 0.1f};
 volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};
@@ -145,6 +148,22 @@ static HAL_StatusTypeDef robostride_write_u8(uint8_t motor_id, uint16_t index, u
 static HAL_StatusTypeDef robostride_enable(uint8_t motor_id);
 static HAL_StatusTypeDef robostride_stop(uint8_t motor_id);
 static void robostride_scan_ids(void);
+/* USER CODE BEGIN 0 */
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 /* USER CODE END PFP */
 
@@ -658,6 +677,7 @@ int main(void)
 
   /* Configure the system clock */
   SystemClock_Config();
+
   /* USER CODE BEGIN SysInit */
 
   /* USER CODE END SysInit */
@@ -731,63 +751,87 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    static uint32_t last_rx_count = 0;
-    static uint32_t last_print_tick = 0;
+  //   static uint32_t last_rx_count = 0;
+  //   static uint32_t last_print_tick = 0;
 
-    if (HAL_GetTick() - last_print_tick >= 300)
-    {
-      CAN3_DiagPrint();
-      FDCAN_ProtocolStatusTypeDef pstatus3;
-      FDCAN_ErrorCountersTypeDef  ecounters3;
-      HAL_FDCAN_GetProtocolStatus(&hfdcan3, &pstatus3);
-      HAL_FDCAN_GetErrorCounters(&hfdcan3, &ecounters3);
+  //   if (HAL_GetTick() - last_print_tick >= 300)
+  //   {
+  //     CAN3_DiagPrint();
+  //     FDCAN_ProtocolStatusTypeDef pstatus3;
+  //     FDCAN_ErrorCountersTypeDef  ecounters3;
+  //     HAL_FDCAN_GetProtocolStatus(&hfdcan3, &pstatus3);
+  //     HAL_FDCAN_GetErrorCounters(&hfdcan3, &ecounters3);
 
-      printf("RS/FDCAN3: tx_ok=%lu tx_fail=%lu last_st=%d last_id=0x%08lX BusOff=%d ErrPassive=%d Warning=%d TEC=%lu REC=%lu LEC=%lu Act=%lu\r\n",
-           (unsigned long)tx_success_count,
-           (unsigned long)tx_fail_count,
-           (int)rs_last_tx_status,
-           (unsigned long)rs_last_tx_id,
-           pstatus3.BusOff,
-           pstatus3.ErrorPassive,
-           pstatus3.Warning,
-           (unsigned long)ecounters3.TxErrorCnt,
-           (unsigned long)ecounters3.RxErrorCnt,
-           (unsigned long)pstatus3.LastErrorCode,
-           (unsigned long)pstatus3.Activity);
+  //     printf("RS/FDCAN3: tx_ok=%lu tx_fail=%lu last_st=%d last_id=0x%08lX BusOff=%d ErrPassive=%d Warning=%d TEC=%lu REC=%lu LEC=%lu Act=%lu\r\n",
+  //          (unsigned long)tx_success_count,
+  //          (unsigned long)tx_fail_count,
+  //          (int)rs_last_tx_status,
+  //          (unsigned long)rs_last_tx_id,
+  //          pstatus3.BusOff,
+  //          pstatus3.ErrorPassive,
+  //          pstatus3.Warning,
+  //          (unsigned long)ecounters3.TxErrorCnt,
+  //          (unsigned long)ecounters3.RxErrorCnt,
+  //          (unsigned long)pstatus3.LastErrorCode,
+  //          (unsigned long)pstatus3.Activity);
 
-      FDCAN_ProtocolStatusTypeDef pstatus1;
-      FDCAN_ErrorCountersTypeDef  ecounters1;
-      HAL_FDCAN_GetProtocolStatus(&hfdcan1, &pstatus1);
-      HAL_FDCAN_GetErrorCounters(&hfdcan1, &ecounters1);
+  //     FDCAN_ProtocolStatusTypeDef pstatus1;
+  //     FDCAN_ErrorCountersTypeDef  ecounters1;
+  //     HAL_FDCAN_GetProtocolStatus(&hfdcan1, &pstatus1);
+  //     HAL_FDCAN_GetErrorCounters(&hfdcan1, &ecounters1);
 
-      printf("FDCAN1: BusOff=%d ErrPassive=%d Warning=%d TEC=%lu REC=%lu LastErrCode=%lu Activity=%lu\r\n",
-           pstatus1.BusOff, pstatus1.ErrorPassive, pstatus1.Warning,
-           (unsigned long)ecounters1.TxErrorCnt,
-           (unsigned long)ecounters1.RxErrorCnt,
-           (unsigned long)pstatus1.LastErrorCode,
-           (unsigned long)pstatus1.Activity);
+  //     printf("FDCAN1: BusOff=%d ErrPassive=%d Warning=%d TEC=%lu REC=%lu LastErrCode=%lu Activity=%lu\r\n",
+  //          pstatus1.BusOff, pstatus1.ErrorPassive, pstatus1.Warning,
+  //          (unsigned long)ecounters1.TxErrorCnt,
+  //          (unsigned long)ecounters1.RxErrorCnt,
+  //          (unsigned long)pstatus1.LastErrorCode,
+  //          (unsigned long)pstatus1.Activity);
 
-      printf("mode=[%d,%d,%d] last_index=0x%04X pos_ref=[%d,%d,%d] spd_ref=[%d,%d,%d]\r\n",
-       control_mode[0], control_mode[1], control_mode[2],
-       rs_last_param_index,
-       (int)(robostride_pos_ref[0] * 1000.0f),
-       (int)(robostride_pos_ref[1] * 1000.0f),
-       (int)(robostride_pos_ref[2] * 1000.0f),
-       (int)(robostride_spd_ref[0] * 1000.0f),
-       (int)(robostride_spd_ref[1] * 1000.0f),
-       (int)(robostride_spd_ref[2] * 1000.0f));
+  //     printf("mode=[%d,%d,%d] last_index=0x%04X pos_ref=[%d,%d,%d] spd_ref=[%d,%d,%d]\r\n",
+  //      control_mode[0], control_mode[1], control_mode[2],
+  //      rs_last_param_index,
+  //      (int)(robostride_pos_ref[0] * 1000.0f),
+  //      (int)(robostride_pos_ref[1] * 1000.0f),
+  //      (int)(robostride_pos_ref[2] * 1000.0f),
+  //      (int)(robostride_spd_ref[0] * 1000.0f),
+  //      (int)(robostride_spd_ref[1] * 1000.0f),
+  //      (int)(robostride_spd_ref[2] * 1000.0f));
 
-      last_print_tick = HAL_GetTick();
-      fflush(stdout);
-    }
+  //     last_print_tick = HAL_GetTick();
+  //     fflush(stdout);
+  //   }
 
     
 
-    if (velocity_rx_count != last_rx_count)
+  //   if (velocity_rx_count != last_rx_count)
+  //   {
+  //     printf("CAN0x100 RX#%d vx=%d vy=%d omega=%d\r\n",
+  //     (int64_t)velocity_rx_count, (int64_t)rx_vx, (int64_t)rx_vy, (int64_t)rx_omega);
+  //     last_rx_count = velocity_rx_count;
+  //   }
+  // }
+    static uint32_t photo_print_tick = 0;
+
+    if (HAL_GetTick() - photo_print_tick >= 100U)
     {
-      printf("CAN0x100 RX#%d vx=%d vy=%d omega=%d\r\n",
-      (int64_t)velocity_rx_count, (int64_t)rx_vx, (int64_t)rx_vy, (int64_t)rx_omega);
-      last_rx_count = velocity_rx_count;
+      photo_print_tick = HAL_GetTick();
+
+      unsigned int photo0 =
+        (HAL_GPIO_ReadPin(motor_0_GPIO_Port, motor_0_Pin)
+         == GPIO_PIN_SET);
+
+      unsigned int photo1 =
+        (HAL_GPIO_ReadPin(motor_1_GPIO_Port, motor_1_Pin)
+         == GPIO_PIN_SET);
+
+      unsigned int photo2 =
+        (HAL_GPIO_ReadPin(motor_2_GPIO_Port, motor_2_Pin)
+         == GPIO_PIN_SET);
+
+      printf("PHOTO motor_0=%u motor_1=%u motor_2=%u\r\n",
+           photo0, photo1, photo2);
+
+      fflush(stdout);
     }
   }
   
@@ -1025,11 +1069,18 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : motor_2_Pin motor_1_Pin motor_0_Pin */
+  GPIO_InitStruct.Pin = motor_2_Pin|motor_1_Pin|motor_0_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LED_Pin */
   GPIO_InitStruct.Pin = LED_Pin;
