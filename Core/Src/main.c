@@ -66,7 +66,7 @@ typedef struct __attribute__((packed)) {
 #define ROBOSTRIDE_HOST_ID   0xFDu   // stm32側のID
 
 #define ROBOSTRIDE_MOTOR_ID_1  1   // robostride側のID
-#define ROBOSTRIDE_MOTOR_ID_2  1
+#define ROBOSTRIDE_MOTOR_ID_2  2
 #define ROBOSTRIDE_MOTOR_ID_3  127
 
 #define RS_TYPE_ENABLE       0x03u   // モーターを有効化する命令
@@ -658,7 +658,6 @@ int main(void)
 
   /* Configure the system clock */
   SystemClock_Config();
-
   /* USER CODE BEGIN SysInit */
 
   /* USER CODE END SysInit */
@@ -779,6 +778,7 @@ int main(void)
        (int)(robostride_spd_ref[2] * 1000.0f));
 
       last_print_tick = HAL_GetTick();
+      fflush(stdout);
     }
 
     
