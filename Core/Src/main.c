@@ -65,9 +65,9 @@ typedef struct __attribute__((packed)) {
 
 #define ROBOSTRIDE_HOST_ID   0xFDu   // stm32側のID
 
-#define ROBOSTRIDE_MOTOR_ID_1  0x01u   // robostride側のID
-#define ROBOSTRIDE_MOTOR_ID_2  0x01u
-#define ROBOSTRIDE_MOTOR_ID_3  0x0127u
+#define ROBOSTRIDE_MOTOR_ID_1  1   // robostride側のID
+#define ROBOSTRIDE_MOTOR_ID_2  1
+#define ROBOSTRIDE_MOTOR_ID_3  127
 
 #define RS_TYPE_ENABLE       0x03u   // モーターを有効化する命令
 #define RS_TYPE_STOP         0x04u   // モーター停止命令
