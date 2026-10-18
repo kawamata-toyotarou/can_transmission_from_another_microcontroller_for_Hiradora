@@ -123,6 +123,48 @@ TIM_HandleTypeDef htim6;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+volatile uint8_t motor_update_due = 0;
+/* 車体中心から各操舵軸までの座標[m]：前+X、左+Y */
+static const float module_x[3] = {
+    0.155f, 0.155f, -0.310f
+};
+
+static const float module_y[3] = {
+    -0.2684679f, 0.2684679f, 0.0f
+};
+
+/* 操舵軸1回転に必要なRobStride出力軸の回転数 */
+static const float steer_ratio[3] = {
+    1.0f, 1.0f, 1.0f
+};
+
+/* RobStride角度の増加が、上から見て反時計回りなら+1 */
+static const float steer_sign[3] = {
+    1.0f, 1.0f, 1.0f
+};
+
+/* 車輪1回転に必要なN5065の回転数 */
+static const float drive_ratio[3] = {
+    1.0f, 1.0f, 1.0f
+};
+
+/* 原点位置で、正の指令により前進するなら+1 */
+static const float drive_sign[3] = {
+    1.0f, 1.0f, 1.0f
+};
+
+static float steer_measured[3];
+
+volatile uint32_t velocity_rx_tick = 0;
+
+/* 最初は0で操舵だけ確認。確認後に1へ変更 */
+volatile uint8_t swerve_drive_enable = 1;
+
+#define SWERVE_CMD_TIMEOUT_MS 300U
+#define SWERVE_ALIGN_RAD      0.174533f  /* 10度 */
+
+
+
 volatile uint32_t tx_success_count = 0;
 volatile uint32_t tx_fail_count = 0;
 volatile HAL_StatusTypeDef rs_last_tx_status = HAL_OK;
@@ -168,7 +210,7 @@ static void MX_TIM6_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static void FDCAN1_ConfigFilterAndStart(void);
-static void compute_wheel_targets(float vx, float vy, float omega);
+//static void compute_wheel_targets(float vx, float vy, float omega);
 
 static HAL_StatusTypeDef robostride_send(uint8_t type, uint16_t data_area, uint8_t motor_id, uint8_t data[8]);
 static void put_u16_le(uint8_t *p, uint16_t v);
@@ -182,9 +224,220 @@ static void robostride_scan_ids(void);
 static int home_read_param(uint8_t id, uint16_t index, void *value, uint8_t size);
 static int home_send_ok(HAL_StatusTypeDef status);
 static int home_one_motor(uint8_t i);
+static void compute_wheel_targets(float vx, float vy, float omega);
+static float wrap_pi(float a);
+static void swerve_task(void);
+static int swerve_send_drive(int run);
+static int can3_wait_idle(void);
+HAL_StatusTypeDef send_motor_cmd(uint8_t motor_id, float speed_target,
+                                  uint8_t pid_mode, uint8_t control_mode);
 /* USER CODE END PFP */
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* 以下は割り込みから呼ばない */
+static int can3_wait_idle(void)
+{
+    uint32_t started = HAL_GetTick();
+
+    while (hfdcan3.Instance->TXBRP != 0U) {
+        if ((hfdcan3.Instance->PSR & FDCAN_PSR_BO) ||
+            HAL_GetTick() - started >= 10U) {
+            return 0;
+        }
+
+        HAL_Delay(1);
+    }
+
+    return (hfdcan3.Instance->PSR & FDCAN_PSR_BO) == 0U;
+}
+
+static int swerve_send_drive(int run)
+{
+    for (uint8_t i = 0; i < 3; ++i) {
+        if (!can3_wait_idle()) {
+            return 0;
+        }
+
+        if (send_motor_cmd(
+                i,
+                run ? wheel_speed_target[i] : 0.0f,
+                goal_pid_mode,
+                goal_control_motor_mode) != HAL_OK) {
+            return 0;
+        }
+
+        if (!can3_wait_idle()) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static void swerve_task(void)
+{
+    /* TIM6からの更新要求を取り出す */
+uint32_t request_mask = __get_PRIMASK();
+__disable_irq();
+
+uint8_t due = motor_update_due;
+motor_update_due = 0;
+
+__set_PRIMASK(request_mask);
+
+if (!due) {
+    return;
+}
+
+    /* 仮OKの軸が残っていれば走行させない */
+    for (uint8_t i = 0; i < 1; ++i) {
+        if (!home_done[i] || control_mode[i] != 1) {
+            (void)swerve_send_drive(0);
+            return;
+        }
+    }
+
+    /* 3台の現在の多回転角度を取得 */
+    for (uint8_t i = 0; i < 1; ++i) {
+        if (!can3_wait_idle() ||
+            !home_read_param(
+                robostride_motor_id[i],
+                0x7019u,
+                &steer_measured[i],
+                4) ||
+            !isfinite(steer_measured[i])) {
+
+            (void)swerve_send_drive(0);
+            return;
+        }
+    }
+
+    /* 受信値をまとめてコピー */
+    uint32_t mask = __get_PRIMASK();
+    __disable_irq();
+
+    float vx = rx_vx;
+    float vy = rx_vy;
+    float omega = rx_omega;
+    uint32_t stamp = velocity_rx_tick;
+    uint32_t count = velocity_rx_count;
+
+    __set_PRIMASK(mask);
+
+    int fresh =
+        count != 0U &&
+        HAL_GetTick() - stamp < SWERVE_CMD_TIMEOUT_MS &&
+        isfinite(vx) &&
+        isfinite(vy) &&
+        isfinite(omega);
+
+    if (fresh) {
+        /* 元のプログラムの受信軸の対応を維持 */
+        compute_wheel_targets(vy, -vx, omega);
+    }
+    else {
+        /* 通信指令が途絶えたら走行速度を0にする */
+        compute_wheel_targets(0.0f, 0.0f, 0.0f);
+    }
+
+    int aligned = 1;
+
+    for (uint8_t i = 0; i < 1; ++i) {
+        float error =
+            (robostride_pos_ref[i] - steer_measured[i])
+            / (steer_sign[i] * steer_ratio[i]);
+
+        if (fabsf(error) > SWERVE_ALIGN_RAD) {
+            aligned = 0;
+        }
+
+        /* 操舵位置を送信 */
+        if (!can3_wait_idle() ||
+            robostride_write_float(
+                robostride_motor_id[i],
+                RS_PARAM_LOC_REF,
+                robostride_pos_ref[i]) != HAL_OK ||
+            !can3_wait_idle()) {
+
+            (void)swerve_send_drive(0);
+            return;
+        }
+    }
+
+    int run =
+        swerve_drive_enable &&
+        fresh &&
+        aligned &&
+        HAL_GetTick() - stamp < SWERVE_CMD_TIMEOUT_MS;
+
+    (void)swerve_send_drive(run);
+}
+
+static float wrap_pi(float a)
+{
+    return remainderf(a, 2.0f * (float)M_PI);
+}
+
+static void compute_wheel_targets(float vx, float vy, float omega)
+{
+    float largest = 0.0f;
+
+    for (uint8_t i = 0; i < 3; ++i) {
+        /* この車輪の位置で必要となる速度[m/s] */
+        float ux = vx - omega * module_y[i];
+        float uy = vy + omega * module_x[i];
+        float speed = hypotf(ux, uy);
+
+        wheel_speed_target[i] = 0.0f;
+
+        /* 停止時は最後の操舵目標を保持 */
+        if (speed < 0.001f) {
+            continue;
+        }
+
+        /* 原点を基準とした現在の車輪角度 */
+        float current =
+            (steer_measured[i] - home_position[i])
+            / (steer_sign[i] * steer_ratio[i]);
+
+        float delta =
+            wrap_pi(atan2f(uy, ux) - current);
+
+        /* 操舵量を±90度以内にする */
+        if (delta > (float)M_PI * 0.5f) {
+            delta -= (float)M_PI;
+            speed = -speed;
+        }
+        else if (delta < -(float)M_PI * 0.5f) {
+            delta += (float)M_PI;
+            speed = -speed;
+        }
+
+        /* 多回転の現在位置に、必要な操舵量を加える */
+        robostride_pos_ref[i] =
+            steer_measured[i]
+            + steer_sign[i] * steer_ratio[i] * delta;
+
+        /* 車輪速度[m/s] → N5065の回転数[rpm] */
+        wheel_speed_target[i] =
+            speed * 60.0f
+            / (2.0f * (float)M_PI * WHEEL_RADIUS_M)
+            * drive_ratio[i] * drive_sign[i];
+
+        largest =
+            fmaxf(largest, fabsf(wheel_speed_target[i]));
+    }
+
+    /* 上限を超えたら3輪を同じ割合で減速 */
+    if (largest > MAX_WHEEL_RPM) {
+        float scale = MAX_WHEEL_RPM / largest;
+
+        for (uint8_t i = 0; i < 3; ++i) {
+            wheel_speed_target[i] *= scale;
+        }
+    }
+}
+
 /* 送信要求の間隔を空ける。HAL_OK自体は変更完了の証明ではない */
 static int home_send_ok(HAL_StatusTypeDef status)
 {
@@ -602,26 +855,26 @@ static void FDCAN1_ConfigFilterAndStart(void)
     }
 }
 
-/* 3輪オムニの逆運動学: vx,vy[m/s], omega[rad/s] → 各ホイールrpm */
-static void compute_wheel_targets(float vx, float vy, float omega)
-{
-    const float wheel_angle[3] = { WHEEL0_ANGLE_RAD, WHEEL1_ANGLE_RAD, WHEEL2_ANGLE_RAD };
+// /* 3輪オムニの逆運動学: vx,vy[m/s], omega[rad/s] → 各ホイールrpm */
+// static void compute_wheel_targets(float vx, float vy, float omega)
+// {
+//     const float wheel_angle[3] = { WHEEL0_ANGLE_RAD, WHEEL1_ANGLE_RAD, WHEEL2_ANGLE_RAD };
 
-    for (int i = 0; i < 3; i++)
-    {
-        // 接線方向速度成分 + 回転による寄与
-        float v_wheel_mps = -vx * sinf(wheel_angle[i]) + vy * cosf(wheel_angle[i])
-                             + ROBOT_RADIUS_M * omega;
+//     for (int i = 0; i < 3; i++)
+//     {
+//         // 接線方向速度成分 + 回転による寄与
+//         float v_wheel_mps = -vx * sinf(wheel_angle[i]) + vy * cosf(wheel_angle[i])
+//                              + ROBOT_RADIUS_M * omega;
 
-        // m/s → rpm変換: rpm = v / (2*pi*r) * 60
-        float rpm = v_wheel_mps / (2.0f * (float)M_PI * WHEEL_RADIUS_M) * 60.0f;
+//         // m/s → rpm変換: rpm = v / (2*pi*r) * 60
+//         float rpm = v_wheel_mps / (2.0f * (float)M_PI * WHEEL_RADIUS_M) * 60.0f;
 
-        if (rpm > MAX_WHEEL_RPM)  rpm = MAX_WHEEL_RPM;
-        if (rpm < -MAX_WHEEL_RPM) rpm = -MAX_WHEEL_RPM;
+//         if (rpm > MAX_WHEEL_RPM)  rpm = MAX_WHEEL_RPM;
+//         if (rpm < -MAX_WHEEL_RPM) rpm = -MAX_WHEEL_RPM;
 
-        wheel_speed_target[i] = rpm;
-    }
-}
+//         wheel_speed_target[i] = rpm;
+//     }
+// }
 
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 {
@@ -654,7 +907,7 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
     rx_vy    = cmd.vy;
     rx_omega = cmd.omega;
 
-    compute_wheel_targets(rx_vy, -rx_vx, rx_omega); 
+    velocity_rx_tick = HAL_GetTick(); 
 
     velocity_rx_count++;
 }
@@ -840,24 +1093,35 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         //     if (st == HAL_OK) { tx_success_count++; } else { tx_fail_count++; }
         // }
 
-        static uint32_t tim6_div = 0;
+        // static uint32_t tim6_div = 0;
 
-        if (++tim6_div >= 20)   // 20msごとくらい
-        {
-            tim6_div = 0;
+        // if (++tim6_div >= 20)   // 20msごとくらい
+        // {
+        //     tim6_div = 0;
 
-          for (uint8_t i = 0; i < 3; i++) {
-            uint8_t id = robostride_motor_id[i];
+        //   for (uint8_t i = 0; i < 3; i++) {
+        //     uint8_t id = robostride_motor_id[i];
 
-            if (control_mode[i] == 0) {
-              robostride_write_float(id, RS_PARAM_SPD_REF, robostride_spd_ref[i]);
-            }
-            else if (control_mode[i] == 1) {
-              robostride_write_float(id, RS_PARAM_LOC_REF, robostride_pos_ref[i]);
-            }
-          }
+        //     if (control_mode[i] == 0) {
+        //       robostride_write_float(id, RS_PARAM_SPD_REF, robostride_spd_ref[i]);
+        //     }
+        //     else if (control_mode[i] == 1) {
+        //       robostride_write_float(id, RS_PARAM_LOC_REF, robostride_pos_ref[i]);
+        //     }
+        //   }
+        if (htim->Instance != TIM6) {
+        return;
+    }
 
-        }
+    /* 現在のTIM6設定は1ms周期 */
+    static uint8_t divider = 0;
+
+    if (++divider >= 20U) {
+        divider = 0;
+        motor_update_due = 1;
+    }
+
+        
 
     }
 }
@@ -968,6 +1232,18 @@ int main(void)
 
   /* ID1 → ID2 → ID127の順に探索 */
   for (uint8_t i = 0; i < 3; i++) {
+ 
+    /* 一時対応：ID2・ID127はセンサー0なら仮OK */
+    if ((robostride_motor_id[i] == 2 ||
+      robostride_motor_id[i] == 127) &&
+      HAL_GPIO_ReadPin(GPIOC, home_sensor_pin[i])
+        == GPIO_PIN_RESET) {
+
+      home_done[i] = 1;
+      control_mode[i] = -1;
+      continue;
+    }
+
     if (!home_one_motor(i)) {
 
         /* 失敗したら3台とも停止要求 */
@@ -1014,7 +1290,11 @@ int main(void)
   fflush(stdout);
 
   /* 全台の原点探索完了後に、通常の目標送信を開始 */
-  HAL_TIM_Base_Start_IT(&htim6);
+  motor_update_due = 0;
+
+if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK) {
+    Error_Handler();
+}
 
   /* USER CODE END 2 */
 
@@ -1025,6 +1305,50 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    static uint32_t rx_print_tick = 0;
+static uint32_t previous_rx_count = 0;
+
+if (HAL_GetTick() - rx_print_tick >= 500U) {
+    rx_print_tick = HAL_GetTick();
+
+    /* 受信割り込みと競合しないようにコピー */
+    uint32_t mask = __get_PRIMASK();
+    __disable_irq();
+
+    uint32_t count = velocity_rx_count;
+    uint32_t stamp = velocity_rx_tick;
+    float vx = rx_vx;
+    float vy = rx_vy;
+    float omega = rx_omega;
+
+    __set_PRIMASK(mask);
+
+    printf("CAN1 RX=%lu +%lu age_ms=%lu\r\n",
+           (unsigned long)count,
+           (unsigned long)(count - previous_rx_count),
+           (unsigned long)(count ? HAL_GetTick() - stamp : 0U));
+
+    /* 整数表示で、printfのfloat対応設定を不要にする */
+    if (isfinite(vx) && isfinite(vy) && isfinite(omega) &&
+        fabsf(vx) < 1000.0f &&
+        fabsf(vy) < 1000.0f &&
+        fabsf(omega) < 1000.0f) {
+
+        printf("vx_mm_s=%ld vy_mm_s=%ld omega_mrad_s=%ld\r\n",
+               (long)(vx * 1000.0f),
+               (long)(vy * 1000.0f),
+               (long)(omega * 1000.0f));
+    } else {
+        printf("CAN1: invalid velocity value\r\n");
+    }
+
+    previous_rx_count = count;
+    fflush(stdout);
+}
+
+ /* 元の呼び出し。重複させない */
+
+    swerve_task();
   //   static uint32_t last_rx_count = 0;
   //   static uint32_t last_print_tick = 0;
 
@@ -1084,29 +1408,29 @@ int main(void)
   //     last_rx_count = velocity_rx_count;
   //   }
   // }
-    static uint32_t photo_print_tick = 0;
+    // static uint32_t photo_print_tick = 0;
 
-    if (HAL_GetTick() - photo_print_tick >= 100U)
-    {
-      photo_print_tick = HAL_GetTick();
+    // if (HAL_GetTick() - photo_print_tick >= 100U)
+    // {
+    //   photo_print_tick = HAL_GetTick();
 
-      unsigned int photo0 =
-        (HAL_GPIO_ReadPin(motor_0_GPIO_Port, motor_0_Pin)
-         == GPIO_PIN_SET);
+    //   unsigned int photo0 =
+    //     (HAL_GPIO_ReadPin(motor_0_GPIO_Port, motor_0_Pin)
+    //      == GPIO_PIN_SET);
 
-      unsigned int photo1 =
-        (HAL_GPIO_ReadPin(motor_1_GPIO_Port, motor_1_Pin)
-         == GPIO_PIN_SET);
+    //   unsigned int photo1 =
+    //     (HAL_GPIO_ReadPin(motor_1_GPIO_Port, motor_1_Pin)
+    //      == GPIO_PIN_SET);
 
-      unsigned int photo2 =
-        (HAL_GPIO_ReadPin(motor_2_GPIO_Port, motor_2_Pin)
-         == GPIO_PIN_SET);
+    //   unsigned int photo2 =
+    //     (HAL_GPIO_ReadPin(motor_2_GPIO_Port, motor_2_Pin)
+    //      == GPIO_PIN_SET);
 
-      printf("PHOTO motor_0=%u motor_1=%u motor_2=%u\r\n",
-           photo0, photo1, photo2);
+    //   printf("PHOTO motor_0=%u motor_1=%u motor_2=%u\r\n",
+    //        photo0, photo1, photo2);
 
-      fflush(stdout);
-    }
+    //   fflush(stdout);
+    // }
   }
   
   /* USER CODE END 3 */
