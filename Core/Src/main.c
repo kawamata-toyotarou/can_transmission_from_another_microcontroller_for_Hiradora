@@ -42,9 +42,25 @@ typedef struct __attribute__((packed)) {
     uint8_t reserved[2];          /* byte6-7 */
 } can_motor_cmd_t;
 
-#define CAN_VELOCITY_CMD_ID  0x100u
+/* CAN3 startup error diagnostics: no CAN transmission or automatic recovery. */
+typedef struct {
+    uint32_t tick;
+    uint32_t psr;
+    uint32_t ecr;
+    uint32_t hal_error;
+} CAN3_DiagEvent;
 
-#define CAN_MOTOR_CMD_BASE_ID 0x301u
+/* robostride_motor_id[] と同じ順番 */
+const uint16_t home_sensor_pin[3] = {
+    GPIO_PIN_3,  // ID 1
+    GPIO_PIN_0,  // ID 2
+    GPIO_PIN_2   // ID 127
+};
+
+/* 探索方向。逆方向にしたければ、その軸だけ負の値にする */
+const float home_speed[3] = {1.5f, 1.5f, 1.5f};
+
+float home_position[3] = {0};
 
 /* USER CODE END PTD */
 
@@ -85,6 +101,12 @@ typedef struct __attribute__((packed)) {
 
 #define motor_0_Pin        GPIO_PIN_3
 #define motor_0_GPIO_Port  GPIOC
+
+#define CAN3_DIAG_CAPACITY 16U
+
+/* 停止開始直後の位置と、停止完了位置の差を許容する */
+#define HOME_POSITION_TOLERANCE_RAD  0.12f
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -126,6 +148,15 @@ volatile float robostride_spd_ref[3] = {2.0f, 2.0f, 2.0f};
 volatile float robostride_pos_ref[3] = {0.1f, 0.1f, 0.1f};
 volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};
 volatile uint16_t rs_last_param_index = 0;
+
+static volatile CAN3_DiagEvent can3_diag_events[CAN3_DIAG_CAPACITY];
+static volatile uint32_t can3_diag_count;
+static volatile uint32_t can3_diag_busoff_seen;
+static volatile uint32_t can3_diag_busoff_psr;
+static volatile uint32_t can3_diag_busoff_ecr;
+
+float home_detect_position[3] = {0};
+uint8_t home_done[3] = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -148,42 +179,226 @@ static HAL_StatusTypeDef robostride_write_u8(uint8_t motor_id, uint16_t index, u
 static HAL_StatusTypeDef robostride_enable(uint8_t motor_id);
 static HAL_StatusTypeDef robostride_stop(uint8_t motor_id);
 static void robostride_scan_ids(void);
-/* USER CODE BEGIN 0 */
+static int home_read_param(uint8_t id, uint16_t index, void *value, uint8_t size);
+static int home_send_ok(HAL_StatusTypeDef status);
+static int home_one_motor(uint8_t i);
 /* USER CODE END PFP */
-
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/* USER CODE END PFP */
+/* 送信要求の間隔を空ける。HAL_OK自体は変更完了の証明ではない */
+static int home_send_ok(HAL_StatusTypeDef status)
+{
+    if (status != HAL_OK) return 0;
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-/* USER CODE END PFP */
+    HAL_Delay(10);
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-/* USER CODE END PFP */
+    return (hfdcan3.Instance->PSR & FDCAN_PSR_BO) == 0U;
+}
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-/* USER CODE END PFP */
+static int home_one_motor(uint8_t i)
+{
+    uint8_t id = robostride_motor_id[i];
+    uint8_t mode;
+    uint8_t stop_data[8] = {0};
+    home_done[i] = 0;
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
+    /* 停止 → 速度モード → 電流制限 → 速度0 */
+    if (!home_send_ok(robostride_send(
+            RS_TYPE_STOP, ROBOSTRIDE_HOST_ID, id, stop_data)) ||
+        !home_send_ok(robostride_write_u8(
+            id, RS_PARAM_RUN_MODE, 2)) ||
+        !home_send_ok(robostride_write_float(
+            id, RS_PARAM_LIMIT_CUR, 1.0f)) ||
+        !home_send_ok(robostride_write_float(
+            id, RS_PARAM_SPD_REF, 0.0f))) {
+        return 0;
+    }
 
-/* CAN3 startup error diagnostics: no CAN transmission or automatic recovery. */
-typedef struct {
-    uint32_t tick;
-    uint32_t psr;
-    uint32_t ecr;
-    uint32_t hal_error;
-} CAN3_DiagEvent;
+    /* 速度モードに切り替わったことを確認 */
+    if (!home_read_param(id, RS_PARAM_RUN_MODE, &mode, 1) ||
+        mode != 2) {
+        return 0;
+    }
 
-#define CAN3_DIAG_CAPACITY 16U
-static volatile CAN3_DiagEvent can3_diag_events[CAN3_DIAG_CAPACITY];
-static volatile uint32_t can3_diag_count;
-static volatile uint32_t can3_diag_busoff_seen;
-static volatile uint32_t can3_diag_busoff_psr;
-static volatile uint32_t can3_diag_busoff_ecr;
+    if (!home_send_ok(robostride_enable(id))) return 0;
+
+    printf("HOME START id=%u\r\n", (unsigned int)id);
+    fflush(stdout);
+
+    uint32_t started = HAL_GetTick();
+
+    /* 初めから0なら、回さず現在位置を原点として扱う */
+    if (HAL_GPIO_ReadPin(GPIOC, home_sensor_pin[i])
+        == GPIO_PIN_SET) {
+
+        if (!home_send_ok(robostride_write_float(
+                id, RS_PARAM_SPD_REF, home_speed[i]))) {
+            return 0;
+        }
+
+        while (HAL_GPIO_ReadPin(GPIOC, home_sensor_pin[i])
+               == GPIO_PIN_SET) {
+
+            /* 見つからなければ45秒で中止 */
+            if (HAL_GetTick() - started >= 45000U ||
+                (hfdcan3.Instance->PSR & FDCAN_PSR_BO)) {
+                return 0;
+            }
+
+            HAL_Delay(1);
+        }
+    }
+
+    /* 0を検出したら速度指令を0にする */
+    if (!home_send_ok(robostride_write_float(
+            id, RS_PARAM_SPD_REF, 0.0f))) {
+        return 0;
+    }
+
+    /* 停止指令直後の角度を記録 */
+    if (!home_read_param(id, 0x7019u, &home_detect_position[i], 4) ||
+      !isfinite(home_detect_position[i])) {
+      return 0;
+    }
+
+    /* 速度が落ち着くまで待つ */
+    uint32_t settling = HAL_GetTick();
+    uint8_t still_count = 0;
+
+    while (still_count < 3) {
+        float speed;
+
+        if (HAL_GetTick() - settling >= 1000U ||
+            !home_read_param(id, 0x701Bu, &speed, 4) ||
+            !isfinite(speed)) {
+            return 0;
+        }
+
+        still_count = fabsf(speed) < 0.03f
+                    ? (uint8_t)(still_count + 1) : 0;
+
+        HAL_Delay(20);
+    }
+
+
+    if (!home_send_ok(robostride_send(
+            RS_TYPE_STOP, ROBOSTRIDE_HOST_ID, id, stop_data))) {
+        return 0;
+    }
+
+    /* 現在の多回転角度を読み取って保存 */
+    if (!home_read_param(id, 0x7019u, &home_position[i], 4) ||
+        !isfinite(home_position[i])) {
+        return 0;
+    }
+
+    float position_error =
+    fabsf(home_position[i] - home_detect_position[i]);
+
+    if (position_error > HOME_POSITION_TOLERANCE_RAD) {
+      printf("HOME FAILED: stop movement too large id=%u\r\n", (unsigned int)id);
+      fflush(stdout);
+      return 0;
+    }
+
+    /* 位置モードへ。目標は0ではなく、いま保存した角度 */
+    if (!home_send_ok(robostride_write_u8(
+            id, RS_PARAM_RUN_MODE, 5)) ||
+        !home_send_ok(robostride_write_float(
+            id, RS_PARAM_LIMIT_SPD, 0.2f)) ||
+        !home_send_ok(robostride_write_float(
+            id, RS_PARAM_LOC_REF, home_position[i]))) {
+        return 0;
+    }
+
+    if (!home_read_param(id, RS_PARAM_RUN_MODE, &mode, 1) ||
+        mode != 5) {
+        return 0;
+    }
+
+    robostride_pos_ref[i] = home_position[i];
+    robostride_spd_ref[i] = 0.0f;
+    control_mode[i] = 1;
+
+    if (!home_send_ok(robostride_enable(id))) return 0;
+
+    printf("HOME DONE id=%u\r\n", (unsigned int)id);
+    fflush(stdout);
+
+    home_done[i] = 1;
+
+    return 1;
+}
+
+static int home_read_param(uint8_t id, uint16_t index, void *value, uint8_t size)
+{
+    FDCAN_RxHeaderTypeDef rx;
+    uint8_t data[64];
+
+    /* 古い応答を捨てる */
+    while (HAL_FDCAN_GetRxFifoFillLevel(
+               &hfdcan3, FDCAN_RX_FIFO0) > 0U) {
+        if (HAL_FDCAN_GetRxMessage(
+                &hfdcan3, FDCAN_RX_FIFO0, &rx, data) != HAL_OK) {
+            return 0;
+        }
+    }
+
+    uint8_t request[8] = {0};
+    put_u16_le(request, index);
+
+    if (robostride_send(0x11u, ROBOSTRIDE_HOST_ID,
+                        id, request) != HAL_OK) {
+        return 0;
+    }
+
+    uint32_t started = HAL_GetTick();
+
+    while (HAL_GetTick() - started < 200U) {
+        if (hfdcan3.Instance->PSR & FDCAN_PSR_BO) {
+            return 0;
+        }
+
+        if (HAL_FDCAN_GetRxFifoFillLevel(
+                &hfdcan3, FDCAN_RX_FIFO0) > 0U) {
+            if (HAL_FDCAN_GetRxMessage(
+                    &hfdcan3, FDCAN_RX_FIFO0,
+                    &rx, data) != HAL_OK) {
+                return 0;
+            }
+
+            if (rx.IdType != FDCAN_EXTENDED_ID ||
+                rx.FDFormat != FDCAN_CLASSIC_CAN ||
+                rx.RxFrameType != FDCAN_DATA_FRAME ||
+                rx.DataLength != FDCAN_DLC_BYTES_8) {
+                continue;
+            }
+
+            uint8_t type = (rx.Identifier >> 24) & 0x1Fu;
+            uint8_t source = (rx.Identifier >> 8) & 0xFFu;
+            uint16_t received_index =
+                data[0] | ((uint16_t)data[1] << 8);
+
+            if (type == 0x11u &&
+                source == id &&
+                (rx.Identifier & 0xFFu) == ROBOSTRIDE_HOST_ID &&
+                received_index == index) {
+
+                /* bit23:16が0なら読み取り成功 */
+                if (((rx.Identifier >> 16) & 0xFFu) != 0U) {
+                    return 0;
+                }
+
+                memcpy(value, &data[4], size);
+                return 1;
+            }
+        }
+
+        HAL_Delay(1);
+    }
+
+    return 0;
+}
 
 static void CAN3_DiagCapture(FDCAN_HandleTypeDef *hfdcan)
 {
@@ -713,33 +928,92 @@ int main(void)
 
   uint8_t data[8] = {0};
 
+  // for (uint8_t i = 0; i < 3; i++) {
+  //   uint8_t id = robostride_motor_id[i];
+
+  //   robostride_stop(id);
+  //   HAL_Delay(100 );
+
+  //   if (control_mode[i] == 0) {
+  //       robostride_write_u8(id, RS_PARAM_RUN_MODE, 2);  // 速度
+  //       HAL_Delay(100);
+
+  //       robostride_write_float(id, RS_PARAM_LIMIT_CUR, 1.0f);
+  //       HAL_Delay(50);
+  //   } else if (control_mode[i] == 1) {
+  //       robostride_write_u8(id, RS_PARAM_RUN_MODE, 5);  // 位置
+  //       HAL_Delay(100);
+
+  //       robostride_write_float(id, RS_PARAM_LIMIT_CUR, 1.0f);
+  //       HAL_Delay(50);
+
+  //       robostride_write_float(id, RS_PARAM_LIMIT_SPD, 1.0f);
+  //       HAL_Delay(50);
+  //   }
+
+  //   robostride_enable(id);
+  //   HAL_Delay(100);
+  // }
+  
+  HAL_Delay(1000);
+
+  /* 探索を始める前に3台とも停止させる */
   for (uint8_t i = 0; i < 3; i++) {
-    uint8_t id = robostride_motor_id[i];
+    uint8_t stop_data[8] = {0};
 
-    robostride_stop(id);
-    HAL_Delay(100 );
-
-    if (control_mode[i] == 0) {
-        robostride_write_u8(id, RS_PARAM_RUN_MODE, 2);  // 速度
-        HAL_Delay(100);
-
-        robostride_write_float(id, RS_PARAM_LIMIT_CUR, 1.0f);
-        HAL_Delay(50);
-    } else if (control_mode[i] == 1) {
-        robostride_write_u8(id, RS_PARAM_RUN_MODE, 5);  // 位置
-        HAL_Delay(100);
-
-        robostride_write_float(id, RS_PARAM_LIMIT_CUR, 1.0f);
-        HAL_Delay(50);
-
-        robostride_write_float(id, RS_PARAM_LIMIT_SPD, 1.0f);
-        HAL_Delay(50);
-    }
-
-    robostride_enable(id);
-    HAL_Delay(100);
+    robostride_send(RS_TYPE_STOP, ROBOSTRIDE_HOST_ID,
+                    robostride_motor_id[i], stop_data);
+    HAL_Delay(10);
   }
 
+  /* ID1 → ID2 → ID127の順に探索 */
+  for (uint8_t i = 0; i < 3; i++) {
+    if (!home_one_motor(i)) {
+
+        /* 失敗したら3台とも停止要求 */
+        for (uint8_t j = 0; j < 3; j++) {
+            uint8_t stop_data[8] = {0};
+
+            robostride_send(RS_TYPE_STOP, ROBOSTRIDE_HOST_ID,
+                            robostride_motor_id[j], stop_data);
+            HAL_Delay(10);
+        }
+
+        printf("HOME FAILED id=%u\r\n",
+               (unsigned int)robostride_motor_id[i]);
+        fflush(stdout);
+
+        /* 通常運転へ進まない */
+        while (1) {
+            HAL_Delay(100);
+        }
+    }
+  }
+
+  /* 3台とも確認 */
+  for (uint8_t i = 0; i < 3; i++) {
+    if (home_done[i] == 0){
+
+        for (uint8_t j = 0; j < 3; j++) {
+            uint8_t stop_data[8] = {0};
+            robostride_send(RS_TYPE_STOP, ROBOSTRIDE_HOST_ID,
+                            robostride_motor_id[j], stop_data);
+            HAL_Delay(10);
+        }
+
+        printf("HOME FAILED: homing is incomplete\r\n");
+        fflush(stdout);
+
+        while (1) {
+            HAL_Delay(100);
+        }
+    }
+  }
+
+  printf("HOME ALL DONE\r\n");
+  fflush(stdout);
+
+  /* 全台の原点探索完了後に、通常の目標送信を開始 */
   HAL_TIM_Base_Start_IT(&htim6);
 
   /* USER CODE END 2 */
