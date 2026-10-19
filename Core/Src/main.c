@@ -135,7 +135,7 @@ static const float module_y[3] = {
 
 /* 操舵軸1回転に必要なRobStride出力軸の回転数 */
 static const float steer_ratio[3] = {
-    1.0f, 1.0f, 1.0f
+    3.0f, 3.0f, 3.0f
 };
 
 /* RobStride角度の増加が、上から見て反時計回りなら+1 */
@@ -150,7 +150,7 @@ static const float drive_ratio[3] = {
 
 /* 原点位置で、正の指令により前進するなら+1 */
 static const float drive_sign[3] = {
-    1.0f, 1.0f, 1.0f
+    -1.0f, -1.0f, -1.0f
 };
 
 static float steer_measured[3];
@@ -558,7 +558,7 @@ static int home_one_motor(uint8_t i)
     if (!home_send_ok(robostride_write_u8(
             id, RS_PARAM_RUN_MODE, 5)) ||
         !home_send_ok(robostride_write_float(
-            id, RS_PARAM_LIMIT_SPD, 0.2f)) ||
+            id, RS_PARAM_LIMIT_SPD, 1.5f)) ||
         !home_send_ok(robostride_write_float(
             id, RS_PARAM_LOC_REF, home_position[i]))) {
         return 0;
