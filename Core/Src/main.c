@@ -229,8 +229,7 @@ static float wrap_pi(float a);
 static void swerve_task(void);
 static int swerve_send_drive(int run);
 static int can3_wait_idle(void);
-HAL_StatusTypeDef send_motor_cmd(uint8_t motor_id, float speed_target,
-                                  uint8_t pid_mode, uint8_t control_mode);
+HAL_StatusTypeDef send_motor_cmd(uint8_t motor_id, float speed_target, uint8_t pid_mode, uint8_t control_mode);
 /* USER CODE END PFP */
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
@@ -297,7 +296,7 @@ if (!due) {
         }
     }
 
-    /* 3台の現在の多回転角度を取得 */
+    /* 3台の現在の多回転角度を取得 */ 
     for (uint8_t i = 0; i < 1; ++i) {
         if (!can3_wait_idle() ||
             !home_read_param(
