@@ -259,7 +259,7 @@ static int swerve_send_drive(int run)
 
         if (send_motor_cmd(
                 i,
-                run ? wheel_speed_target[i] : 0.0f,
+                (run && home_done[i] && control_mode[i] == 1) ? wheel_speed_target[i] : 0.0f,
                 goal_pid_mode,
                 goal_control_motor_mode) != HAL_OK) {
             return 0;
@@ -289,7 +289,7 @@ if (!due) {
 }
 
     /* 仮OKの軸が残っていれば走行させない */
-    for (uint8_t i = 0; i < 1; ++i) {
+    for (uint8_t i = 0; i < 3; ++i) {
         if (!home_done[i] || control_mode[i] != 1) {
             (void)swerve_send_drive(0);
             return;
@@ -297,7 +297,7 @@ if (!due) {
     }
 
     /* 3台の現在の多回転角度を取得 */ 
-    for (uint8_t i = 0; i < 1; ++i) {
+    for (uint8_t i = 0; i < 3; ++i) {
         if (!can3_wait_idle() ||
             !home_read_param(
                 robostride_motor_id[i],
@@ -341,7 +341,7 @@ if (!due) {
 
     int aligned = 1;
 
-    for (uint8_t i = 0; i < 1; ++i) {
+    for (uint8_t i = 0; i < 3; ++i) {
         float error =
             (robostride_pos_ref[i] - steer_measured[i])
             / (steer_sign[i] * steer_ratio[i]);
@@ -557,7 +557,7 @@ static int home_one_motor(uint8_t i)
     if (!home_send_ok(robostride_write_u8(
             id, RS_PARAM_RUN_MODE, 5)) ||
         !home_send_ok(robostride_write_float(
-            id, RS_PARAM_LIMIT_SPD, 1.5f)) ||
+            id, RS_PARAM_LIMIT_SPD, 4.5f)) ||
         !home_send_ok(robostride_write_float(
             id, RS_PARAM_LOC_REF, home_position[i]))) {
         return 0;
@@ -1233,15 +1233,15 @@ int main(void)
   for (uint8_t i = 0; i < 3; i++) {
  
     /* 一時対応：ID2・ID127はセンサー0なら仮OK */
-    if ((robostride_motor_id[i] == 2 ||
-      robostride_motor_id[i] == 127) &&
-      HAL_GPIO_ReadPin(GPIOC, home_sensor_pin[i])
-        == GPIO_PIN_RESET) {
+    // if ((robostride_motor_id[i] == 2 ||
+    //   robostride_motor_id[i] == 127) &&
+    //   HAL_GPIO_ReadPin(GPIOC, home_sensor_pin[i])
+    //     == GPIO_PIN_RESET) {
 
-      home_done[i] = 1;
-      control_mode[i] = -1;
-      continue;
-    }
+    //   home_done[i] = 1;
+    //   control_mode[i] = -1;
+    //   continue;
+    // }
 
     if (!home_one_motor(i)) {
 
