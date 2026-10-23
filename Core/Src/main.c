@@ -29,83 +29,75 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef struct __attribute__((packed)) {
-    float vx;      /* byte0-3: m/s (そのまま) */
-    float vy;      /* byte4-7: m/s (そのまま) */
-    float omega;   /* byte8-11: rad/s (そのまま) */
+typedef struct __attribute__((packed)) { /* __attribute__((packed))で余計なメモリを入れない設定に */
+    float vx;                            /* byte0-3: m/s (そのまま) */
+    float vy;                            /* byte4-7: m/s (そのまま) */
+    float omega;                         /* byte8-11: rad/s (そのまま) */
 } can_velocity_cmd_t;
 
-typedef struct __attribute__((packed)) {
-    float   speed_target;         /* byte0-3 */
-    uint8_t pid_mode;             /* byte4: 0=locate_pid, 1=speed_pid */
-    uint8_t control_motor_mode;   /* byte5: 0=電圧制御, 1=電流制御 */
-    uint8_t reserved[2];          /* byte6-7 */
+typedef struct __attribute__((packed)) {  /* __attribute__((packed))で余計なメモリを入れない設定に */
+    float   speed_target;                 /* byte0-3 */
+    uint8_t pid_mode;                     /* byte4: 0=locate_pid, 1=speed_pid */
+    uint8_t control_motor_mode;           /* byte5: 0=電圧制御, 1=電流制御 */
+    uint8_t reserved[2];                  /* byte6-7 */
 } can_motor_cmd_t;
 
 /* CAN3 startup error diagnostics: no CAN transmission or automatic recovery. */
 typedef struct {
-    uint32_t tick;
-    uint32_t psr;
-    uint32_t ecr;
-    uint32_t hal_error;
+    uint32_t tick;                       /* エラーが記録された時刻 */
+    uint32_t psr;                        /* CAN通信の状態を示すレジスタの値 */
+    uint32_t ecr;                        /* CAN通信のエラーカウンタの値 */
+    uint32_t hal_error;                  /* STM32のHALが管理するエラー情報 */
 } CAN3_DiagEvent;
-
-/* robostride_motor_id[] と同じ順番 */
-const uint16_t home_sensor_pin[3] = {
-    GPIO_PIN_3,  // ID 1
-    GPIO_PIN_0,  // ID 2
-    GPIO_PIN_2   // ID 127
-};
-
-/* 探索方向。逆方向にしたければ、その軸だけ負の値にする */
-const float home_speed[3] = {1.5f, 1.5f, 1.5f};
-
-float home_position[3] = {0};
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define CAN_VELOCITY_CMD_ID  0x100u
+#define CAN_VELOCITY_CMD_ID  0x100u      // 速度指令を受信するCANID
+#define CAN_MOTOR_CMD_BASE_ID 0x301u     // 車輪駆動モーターへの送信IDの基準
+#define ROBOSTRIDE_HOST_ID   0xFDu       // stm32側のID
 
-#define CAN_MOTOR_CMD_BASE_ID 0x301u
-
-#define WHEEL_RADIUS_M      0.037f  // ホイール半径[m] ← 実機に合わせて変更
-#define ROBOT_RADIUS_M      0.31f   // 中心からホイールまでの距離[m] ← 実機に合わせて変更
-
-#define WHEEL0_ANGLE_RAD    (-(float)M_PI / 3.0f)          //  60°  
-#define WHEEL1_ANGLE_RAD    ((float)M_PI / 3.0f)          // -60°  
-#define WHEEL2_ANGLE_RAD    ((float)M_PI)  
-
-#define MAX_WHEEL_RPM 5000.0f        // doc1/2側のクリップ値と合わせる
-
-#define ROBOSTRIDE_HOST_ID   0xFDu   // stm32側のID
-
-#define ROBOSTRIDE_MOTOR_ID_1  1   // robostride側のID
+/* robostride側のID*/
+#define ROBOSTRIDE_MOTOR_ID_1  1   
 #define ROBOSTRIDE_MOTOR_ID_2  2
 #define ROBOSTRIDE_MOTOR_ID_3  127
 
-#define RS_TYPE_ENABLE       0x03u   // モーターを有効化する命令
-#define RS_TYPE_STOP         0x04u   // モーター停止命令
-#define RS_TYPE_WRITE_PARAM  0x12u   // パラメータを書き換える命令
+/* RoboStrideの命令タイプ */
+#define RS_TYPE_ENABLE       0x03u       // モーターを有効化する命令
+#define RS_TYPE_STOP         0x04u       // モーター停止命令
+#define RS_TYPE_WRITE_PARAM  0x12u       // パラメータを書き換える命令
 
-#define RS_PARAM_RUN_MODE    0x7005u // 制御モードを指定するパラメータ番号
-#define RS_PARAM_LIMIT_CUR   0x7018u // 電流制限のパラメータ番号
-#define RS_PARAM_ACC_RAD     0x7022u // 加速度制限のパラメータ番号
-#define RS_PARAM_SPD_REF     0x700Au // 目標速度のパラメータ番号
+/* RoboStrideのパラメータ番号 */
+#define RS_PARAM_RUN_MODE    0x7005u     // 制御モードを指定するパラメータ番号
+#define RS_PARAM_LIMIT_CUR   0x7018u     // 電流制限のパラメータ番号
+#define RS_PARAM_ACC_RAD     0x7022u     // 加速度制限のパラメータ番号
+#define RS_PARAM_SPD_REF     0x700Au     // 目標速度のパラメータ番号
+#define RS_PARAM_LOC_REF    0x7016u      // 目標位置
+#define RS_PARAM_LIMIT_SPD  0x7017u      // 位置制御中の最大速度制限
+ 
+#define MAX_WHEEL_RPM 5000.0f            // 輪駆動モーターに送る回転速度指令の上限を5000 rpmに設定 
 
-#define RS_PARAM_LOC_REF    0x7016u  // 目標位置
-#define RS_PARAM_LIMIT_SPD  0x7017u  // 位置制御中の最大速度制限
-
-#define RS_ID_SCAN_ONLY  0  // 1: ID確認、0: 通常動作
+#define RS_ID_SCAN_ONLY  0               // 1: ID確認、0: 通常動作
 
 #define motor_0_Pin        GPIO_PIN_3
 #define motor_0_GPIO_Port  GPIOC
 
-#define CAN3_DIAG_CAPACITY 16U
+#define CAN3_DIAG_CAPACITY 16U           // CAN3の診断イベントを最大16件保存
 
 /* 停止開始直後の位置と、停止完了位置の差を許容する */
 #define HOME_POSITION_TOLERANCE_RAD  0.12f
+
+#define SWERVE_CMD_TIMEOUT_MS 300U
+#define SWERVE_ALIGN_RAD      0.174533f  /* 10度 */
+
+#define WHEEL_RADIUS_M      0.037f       // ホイール半径[m] ← 実機に合わせて変更
+#define ROBOT_RADIUS_M      0.31f        // 中心からホイールまでの距離[m] ← 実機に合わせて変更
+
+/* 車輪の角度設定 */
+#define WHEEL0_ANGLE_RAD    (-(float)M_PI / 3.0f)     //  60°  
+#define WHEEL1_ANGLE_RAD    ((float)M_PI / 3.0f)      // -60°  
+#define WHEEL2_ANGLE_RAD    ((float)M_PI) 
 
 /* USER CODE END PD */
 
@@ -123,12 +115,12 @@ TIM_HandleTypeDef htim6;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-volatile uint8_t motor_update_due = 0;
+volatile uint8_t motor_update_due = 0;   // モーターの制御処理を実行するタイミングになったかどうかを示す変数
+
 /* 車体中心から各操舵軸までの座標[m]：前+X、左+Y */
 static const float module_x[3] = {
     0.155f, 0.155f, -0.310f
 };
-
 static const float module_y[3] = {
     -0.2684679f, 0.2684679f, 0.0f
 };
@@ -153,31 +145,18 @@ static const float drive_sign[3] = {
     -1.0f, -1.0f, -1.0f
 };
 
-static float steer_measured[3];
+static float steer_measured[3];          // RoboStrideから取得した現在の角度を保存する配列
 
-volatile uint32_t velocity_rx_tick = 0;
+volatile uint32_t velocity_rx_tick = 0;  // 最後にCAN通信で速度指令を受信した時刻を保存する変数
 
-/* 最初は0で操舵だけ確認。確認後に1へ変更 */
-volatile uint8_t swerve_drive_enable = 1;
+volatile uint8_t swerve_drive_enable = 1;// 駆動モーターの動作を許可するフラグ 最初は0で操舵だけ確認。確認後に1へ変更
 
-#define SWERVE_CMD_TIMEOUT_MS 300U
-#define SWERVE_ALIGN_RAD      0.174533f  /* 10度 */
-
-
-
-volatile uint32_t tx_success_count = 0;
-volatile uint32_t tx_fail_count = 0;
-volatile HAL_StatusTypeDef rs_last_tx_status = HAL_OK;
-volatile uint32_t rs_last_tx_id = 0;
-
-volatile float goal_speed_target = 300;
-volatile uint8_t goal_pid_mode = 0;
-volatile uint8_t goal_control_motor_mode = 0;
-
-volatile float rx_vx    = 0.0f;   /* m/s */
-volatile float rx_vy    = 0.0f;   /* m/s */
-volatile float rx_omega = 0.0f;   /* rad/s */
-volatile uint32_t velocity_rx_count = 0;
+/* robostride_motor_id[] と同じ順番 */
+const uint16_t home_sensor_pin[3] = {
+    GPIO_PIN_3,                      // ID 1
+    GPIO_PIN_0,                      // ID 2
+    GPIO_PIN_2                       // ID 127
+};
 
 const uint8_t robostride_motor_id[3] = {
     ROBOSTRIDE_MOTOR_ID_1,
@@ -185,20 +164,39 @@ const uint8_t robostride_motor_id[3] = {
     ROBOSTRIDE_MOTOR_ID_3
 };
 
-volatile int8_t control_mode[3] = {0, 0, 0};   // 0=速度, 1=位置
-volatile float robostride_spd_ref[3] = {2.0f, 2.0f, 2.0f};
-volatile float robostride_pos_ref[3] = {0.1f, 0.1f, 0.1f};
-volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};
+float home_position[3] = {0};            // モーターの原点位置を記録する配列
+float home_detect_position[3] = {0};     // 原点センサーを検出して停止指令を出した直後の角度を記録する配列
+uint8_t home_done[3] = {0};              // 各モーターの原点復帰が完了したかどうかを記録する配列
+
+/* 初期化探索方向。逆方向にしたければ、その軸だけ負の値にする */
+const float home_speed[3] = {1.5f, 1.5f, 1.5f};
+
+volatile uint32_t tx_success_count = 0;                               // CAN送信要求が成功した回数
+volatile uint32_t tx_fail_count = 0;                                  // CAN送信要求が失敗した回数
+volatile HAL_StatusTypeDef rs_last_tx_status = HAL_OK;                // 最後のRoboStride送信処理のHALステータス
+volatile uint32_t rs_last_tx_id = 0;                                  // 最後に送信要求したCAN ID
+volatile uint32_t velocity_rx_count = 0;                              // 速度指令の受信回数
+
+volatile float goal_speed_target = 300;                               // 速度目標 rpm
+volatile uint8_t goal_pid_mode = 0;                                   // 0なら位置pidで1から速度pid
+volatile uint8_t goal_control_motor_mode = 0;                         // 0なら電圧制御 1なら電流制御
+volatile float rx_vx    = 0.0f;                                       /* m/s */
+volatile float rx_vy    = 0.0f;                                       /* m/s */
+volatile float rx_omega = 0.0f;                                       /* rad/s */
+
+volatile int8_t control_mode[3] = {0, 0, 0};              // RoboStrideの制御モードを管理する配列 0=速度, 1=位置
+volatile float robostride_spd_ref[3] = {2.0f, 2.0f, 2.0f};// RoboStrideの速度位置を保存
+volatile float robostride_pos_ref[3] = {0.1f, 0.1f, 0.1f};// RoboStrideの目標位置を保存
+volatile float wheel_speed_target[3] = {0.0f, 0.0f, 0.0f};// 各車輪駆動モーターの目標速度を保存
 volatile uint16_t rs_last_param_index = 0;
 
-static volatile CAN3_DiagEvent can3_diag_events[CAN3_DIAG_CAPACITY];
+/* CAN3のエラー記録 */
+static volatile CAN3_DiagEvent can3_diag_events[CAN3_DIAG_CAPACITY];  // 16件分のエラー情報を保存
 static volatile uint32_t can3_diag_count;
 static volatile uint32_t can3_diag_busoff_seen;
 static volatile uint32_t can3_diag_busoff_psr;
 static volatile uint32_t can3_diag_busoff_ecr;
 
-float home_detect_position[3] = {0};
-uint8_t home_done[3] = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -212,44 +210,46 @@ static void MX_USART2_UART_Init(void);
 static void FDCAN1_ConfigFilterAndStart(void);
 //static void compute_wheel_targets(float vx, float vy, float omega);
 
-static HAL_StatusTypeDef robostride_send(uint8_t type, uint16_t data_area, uint8_t motor_id, uint8_t data[8]);
+static HAL_StatusTypeDef robostride_send(uint8_t type, uint16_t data_area, uint8_t motor_id, uint8_t data[8]); // RoboStrideにCANメッセージを送信するための関数
 static void put_u16_le(uint8_t *p, uint16_t v);
 static void put_float_le(uint8_t *p, float v);
 static inline float be_bytes_to_float(const uint8_t *p);
-static HAL_StatusTypeDef robostride_write_float(uint8_t motor_id, uint16_t index, float value);
-static HAL_StatusTypeDef robostride_write_u8(uint8_t motor_id, uint16_t index, uint8_t value);
-static HAL_StatusTypeDef robostride_enable(uint8_t motor_id);
-static HAL_StatusTypeDef robostride_stop(uint8_t motor_id);
-static void robostride_scan_ids(void);
-static int home_read_param(uint8_t id, uint16_t index, void *value, uint8_t size);
-static int home_send_ok(HAL_StatusTypeDef status);
-static int home_one_motor(uint8_t i);
-static void compute_wheel_targets(float vx, float vy, float omega);
-static float wrap_pi(float a);
-static void swerve_task(void);
-static int swerve_send_drive(int run);
-static int can3_wait_idle(void);
-HAL_StatusTypeDef send_motor_cmd(uint8_t motor_id, float speed_target, uint8_t pid_mode, uint8_t control_mode);
+static HAL_StatusTypeDef robostride_write_float(uint8_t motor_id, uint16_t index, float value);                // float型のパラメータを書き込む
+static HAL_StatusTypeDef robostride_write_u8(uint8_t motor_id, uint16_t index, uint8_t value);                 // 8ビット整数のパラメータを書き込む
+static HAL_StatusTypeDef robostride_enable(uint8_t motor_id);                                                  // モーターの有効化
+static HAL_StatusTypeDef robostride_stop(uint8_t motor_id);                                                    // モーターの停止
+static void robostride_scan_ids(void);                                                                         // モーターIDの探索                       
+static int home_read_param(uint8_t id, uint16_t index, void *value, uint8_t size);                             // モーターのパラメータを読み取る
+static int home_send_ok(HAL_StatusTypeDef status);                                                             // 送信結果の確認と待機
+static int home_one_motor(uint8_t i);                                                                          // 1台の原点復帰
+static void compute_wheel_targets(float vx, float vy, float omega);                                            // 3輪の目標角度・速度を計算
+static float wrap_pi(float a);                                                                                 // 角度を一定範囲に収める
+static void swerve_task(void);                                                                                 // 独立ステアリングの制御処理
+static int swerve_send_drive(int run);                                                                         // 3輪の駆動速度指令を送信
+static int can3_wait_idle(void);                                                                               // CAN3の送信待機
+HAL_StatusTypeDef send_motor_cmd(uint8_t motor_id, float speed_target, uint8_t pid_mode, uint8_t control_mode);// n5065にcanを送信する関数
 /* USER CODE END PFP */
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/* 以下は割り込みから呼ばない */
+
+/* CAN通信の送信待機関数 */
 static int can3_wait_idle(void)
 {
-    uint32_t started = HAL_GetTick();
+    uint32_t started = HAL_GetTick();                    // 開始時刻を取得
 
-    while (hfdcan3.Instance->TXBRP != 0U) {
-        if ((hfdcan3.Instance->PSR & FDCAN_PSR_BO) ||
-            HAL_GetTick() - started >= 10U) {
-            return 0;
+    while (hfdcan3.Instance->TXBRP != 0U) {              // CANの送信要求が残っているか確認 TXBRPはFDCANの送信要求保留レジスタで送信要求が保留されていると、対応するビットが1
+        if ((hfdcan3.Instance->PSR & FDCAN_PSR_BO) ||    // FDCAN_PSR_BO は、Bus-Off状態を表すビットのマスク
+            HAL_GetTick() - started >= 10U) {            // 10ms以上経過したか
+            return 0;   
         }
 
         HAL_Delay(1);
     }
 
-    return (hfdcan3.Instance->PSR & FDCAN_PSR_BO) == 0U;
+    return (hfdcan3.Instance->PSR & FDCAN_PSR_BO) == 0U; // Bus-Offを確認して結果を返す
 }
 
+/* 3台の車輪駆動モーターに対して、速度指令を順番に送信 */
 static int swerve_send_drive(int run)
 {
     for (uint8_t i = 0; i < 3; ++i) {
