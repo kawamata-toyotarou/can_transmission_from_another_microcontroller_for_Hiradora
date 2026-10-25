@@ -422,15 +422,18 @@ static int home_one_motor(uint8_t i)
     uint8_t id = robostride_motor_id[i];
     uint8_t mode;
     uint8_t stop_data[8] = {0};
+    stop_data[0] = 1;                    // 初期化開始時に異常解除を要求
     home_done[i] = 0;
 
     /* 停止 → 速度モード → 電流制限 → 速度0 */
     if (!home_send_ok(robostride_send(RS_TYPE_STOP, ROBOSTRIDE_HOST_ID, id, stop_data)) ||
         !home_send_ok(robostride_write_u8(id, RS_PARAM_RUN_MODE, 2)) ||
-        !home_send_ok(robostride_write_float(id, RS_PARAM_LIMIT_CUR, 1.0f)) ||
+        !home_send_ok(robostride_write_float(id, RS_PARAM_LIMIT_CUR, 3.0f)) ||
         !home_send_ok(robostride_write_float(id, RS_PARAM_SPD_REF, 0.0f))) {
         return 0;
     }
+
+    stop_data[0] = 0;
 
     /* 速度モードに切り替わったことを確認 */
     if (!home_read_param(id, RS_PARAM_RUN_MODE, &mode, 1) || mode != 2) {
@@ -450,6 +453,22 @@ static int home_one_motor(uint8_t i)
         if (!home_send_ok(robostride_write_float(id, RS_PARAM_SPD_REF, home_speed[i]))) {
             return 0;
         }
+
+        // /* 診断用：回転指令が反映されたか、実際に回っているか確認 */
+        // HAL_Delay(100);
+
+        // float check_ref = NAN;
+        // float check_vel = NAN;
+        // float check_cur = NAN;
+
+        // int ref_ok = home_read_param(id, RS_PARAM_SPD_REF, &check_ref, 4);
+
+        // int vel_ok = home_read_param(id, 0x701Bu, &check_vel, 4);
+
+        // int cur_ok = home_read_param(id, RS_PARAM_LIMIT_CUR, &check_cur, 4);
+
+        // printf("HOME CHECK id=%u sensor=%u ""ref_ok=%d ref_x1000=%ld ""vel_ok=%d vel_x1000=%ld ""cur_ok=%d limit_mA=%ld BO=%u\r\n",(unsigned int)id,(unsigned int)HAL_GPIO_ReadPin(GPIOC, home_sensor_pin[i]),ref_ok,(long)((ref_ok && isfinite(check_ref))? check_ref * 1000.0f : -999999.0f),vel_ok,(long)((vel_ok && isfinite(check_vel)) ? check_vel * 1000.0f : -999999.0f), cur_ok, (long)((cur_ok && isfinite(check_cur)) ? check_cur * 1000.0f : -999999.0f), (unsigned int)((hfdcan3.Instance->PSR & FDCAN_PSR_BO) != 0U));
+        // fflush(stdout);
 
         while (HAL_GPIO_ReadPin(GPIOC, home_sensor_pin[i]) == GPIO_PIN_SET) {
 
@@ -546,6 +565,15 @@ static int home_read_param(uint8_t id, uint16_t index, void *value, uint8_t size
         if (HAL_FDCAN_GetRxMessage(&hfdcan3, FDCAN_RX_FIFO0, &rx, data) != HAL_OK) {
             return 0;
         }
+
+        /* 診断用：捨てる前に状態・異常フレームを表示 */
+        // if (rx.IdType == FDCAN_EXTENDED_ID && rx.RxFrameType == FDCAN_DATA_FRAME && rx.DataLength == FDCAN_DLC_BYTES_8) { uint8_t report_type = (uint8_t)((rx.Identifier >> 24) & 0x1FU);
+        //     uint8_t report_motor = (uint8_t)((rx.Identifier >> 8) & 0xFFU);
+        //     if (report_motor == id && (report_type == 2U || report_type == 21U)) {
+        //         printf("RS REPORT id=%u type=%u CAN=0x%08lX ""DATA=%02X %02X %02X %02X %02X %02X %02X %02X\r\n",(unsigned int)report_motor,(unsigned int)report_type,(unsigned long)rx.Identifier,(unsigned int)data[0], (unsigned int)data[1],(unsigned int)data[2], (unsigned int)data[3],(unsigned int)data[4], (unsigned int)data[5],(unsigned int)data[6], (unsigned int)data[7]);
+        //         fflush(stdout);
+        //     }
+        // }
     }
 
     uint8_t request[8] = {0};
@@ -566,6 +594,16 @@ static int home_read_param(uint8_t id, uint16_t index, void *value, uint8_t size
             if (HAL_FDCAN_GetRxMessage(&hfdcan3, FDCAN_RX_FIFO0,&rx, data) != HAL_OK) {
                 return 0;
             }
+
+            /* 診断用：捨てる前に状態・異常フレームを表示 */
+            // if (rx.IdType == FDCAN_EXTENDED_ID && rx.RxFrameType == FDCAN_DATA_FRAME && rx.DataLength == FDCAN_DLC_BYTES_8) {
+            //     uint8_t report_type = (uint8_t)((rx.Identifier >> 24) & 0x1FU);
+            //     uint8_t report_motor = (uint8_t)((rx.Identifier >> 8) & 0xFFU);
+            //     if (report_motor == id && (report_type == 2U || report_type == 21U)) {
+            //         printf("RS REPORT id=%u type=%u CAN=0x%08lX ""DATA=%02X %02X %02X %02X %02X %02X %02X %02X\r\n",(unsigned int)report_motor,(unsigned int)report_type,(unsigned long)rx.Identifier,(unsigned int)data[0], (unsigned int)data[1],(unsigned int)data[2], (unsigned int)data[3],(unsigned int)data[4], (unsigned int)data[5],(unsigned int)data[6], (unsigned int)data[7]);
+            //         fflush(stdout);
+            //     }
+            // }
 
             if (rx.IdType != FDCAN_EXTENDED_ID || rx.FDFormat != FDCAN_CLASSIC_CAN || rx.RxFrameType != FDCAN_DATA_FRAME || rx.DataLength != FDCAN_DLC_BYTES_8) {
                 continue;
