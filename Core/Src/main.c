@@ -54,6 +54,10 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+/* 原点を基準とした、車輪の操舵角の上限 */
+#define STEER_LIMIT_DEG 90.0f
+#define STEER_LIMIT_RAD (STEER_LIMIT_DEG * (float)M_PI / 180.0f)
+
 #define CAN_VELOCITY_CMD_ID  0x100u      // 速度指令を受信するCANID
 #define CAN_MOTOR_CMD_BASE_ID 0x301u     // 車輪駆動モーターへの送信IDの基準
 #define ROBOSTRIDE_HOST_ID   0xFDu       // stm32側のID
@@ -358,13 +362,13 @@ static float wrap_pi(float a)
 /* 独立ステアリングの座標変換関数 */
 static void compute_wheel_targets(float vx, float vy, float omega)
 {
-    float largest = 0.0f;
+    float largest = 0.0f;                     // 最も大きい目標回転数の絶対値を保存
+    int feasible = 1;                         // 3輪すべてで必要な向きを作れるかを記録
 
     for (uint8_t i = 0; i < 3; ++i) {
-        /* この車輪の位置で必要となる速度[m/s] */
         float ux = vx - omega * module_y[i];
         float uy = vy + omega * module_x[i];
-        float speed = hypotf(ux, uy);
+        float speed = hypotf(ux, uy);         // hypotf(ux, uy)は(ux^2 + uy^2)のルート
 
         wheel_speed_target[i] = 0.0f;
 
@@ -373,30 +377,55 @@ static void compute_wheel_targets(float vx, float vy, float omega)
             continue;
         }
 
-        /* 原点を基準とした現在の車輪角度 */
-        float current = (steer_measured[i] - home_position[i]) / (steer_sign[i] * steer_ratio[i]);
+        /* 原点基準の現在の車輪角度 */
+        float current = (steer_measured[i] - home_position[i]) / (steer_sign[i] * steer_ratio[i]);  // 現在の車輪の向きを、原点基準の角度(rad)に
+        float heading = atan2f(uy, ux);        // y座標とx座標から角度を求める関数
+        float best_angle = 0.0f;               // 最終的に選ぶ車輪の向きを保存
+        float best_distance = INFINITY;        // 現在位置からの最短移動量を保存
+        float best_sign = 1.0f;                // 駆動方向の補正を保存
+        int found = 0;                         // 範囲内の操舵角を見つけたか記録
 
-        float delta = wrap_pi(atan2f(uy, ux) - current);
+        /* 同じ走行方向を実現できる角度から、制限内で現在位置に最も近いものを選ぶ */
+        for (int k = -2; k <= 2; ++k) {
+            float candidate = heading + (float)k * (float)M_PI;  // 元の方向に、180°ずつ足し引きした操舵角を作成
 
-        /* 操舵量を±90度以内にする */
-        if (delta > (float)M_PI * 0.5f) {
-            delta -= (float)M_PI;
-            speed = -speed;
+            if (fabsf(candidate) > STEER_LIMIT_RAD) {            // 候補の角度が、設定した上限を超えていないか確認
+                continue;
+            }
+
+            float distance = fabsf(candidate - current);         // 現在の車輪角度から、その候補まで何rad動く必要があるかを計算
+
+            if (distance < best_distance) {                      // 今までの候補より移動量が小さい場合に、その候補を採用
+                best_distance = distance;
+                best_angle = candidate;
+
+                /* 180度ずらす場合は駆動方向を反転 */
+                best_sign = (k % 2 == 0) ? 1.0f : -1.0f;
+                found = 1;
+            }
         }
-        else if (delta < -(float)M_PI * 0.5f) {
-            delta += (float)M_PI;
-            speed = -speed;
+
+        /* 範囲内の角度がなければ走行させない */
+        if (!found) {
+            feasible = 0;
+            continue;
         }
 
-        /* 多回転の現在位置に、必要な操舵量を加える */
-        robostride_pos_ref[i] = steer_measured[i] + steer_sign[i] * steer_ratio[i] * delta;
-
-        /* 車輪速度[m/s] → N5065の回転数[rpm] */
-        wheel_speed_target[i] = speed * 60.0f / (2.0f * (float)M_PI * WHEEL_RADIUS_M) * drive_ratio[i] * drive_sign[i];
+        /* 現在位置への加算ではなく、原点基準で指定 */
+        robostride_pos_ref[i] = home_position[i] + steer_sign[i] * steer_ratio[i] * best_angle;
+        wheel_speed_target[i] = speed * best_sign * 60.0f / (2.0f * (float)M_PI * WHEEL_RADIUS_M) * drive_ratio[i] * drive_sign[i];
         largest = fmaxf(largest, fabsf(wheel_speed_target[i]));
     }
 
-    /* 上限を超えたら3輪を同じ割合で減速 */
+    /* 1軸でも実現できなければ3輪とも駆動停止 */
+    if (!feasible) {
+        for (uint8_t i = 0; i < 3; ++i) {
+            wheel_speed_target[i] = 0.0f;
+        }
+        return;
+    }
+
+    /* 回転数上限を維持 */
     if (largest > MAX_WHEEL_RPM) {
         float scale = MAX_WHEEL_RPM / largest;
 
@@ -531,7 +560,7 @@ static int home_one_motor(uint8_t i)
 
     /* 位置モードへ。目標は0ではなく、いま保存した角度 */
     if (!home_send_ok(robostride_write_u8(id, RS_PARAM_RUN_MODE, 5)) ||
-        !home_send_ok(robostride_write_float(id, RS_PARAM_LIMIT_SPD, 2.5f)) ||
+        !home_send_ok(robostride_write_float(id, RS_PARAM_LIMIT_SPD, 15.0f)) ||
         !home_send_ok(robostride_write_float(id, RS_PARAM_LOC_REF, home_position[i]))) {
         return 0;
     }
