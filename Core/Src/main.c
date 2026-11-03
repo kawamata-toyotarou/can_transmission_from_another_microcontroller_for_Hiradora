@@ -63,7 +63,7 @@ typedef struct {
 #define ROBOSTRIDE_HOST_ID   0xFDu       // stm32側のID
 
 /* robostride側のID*/
-#define ROBOSTRIDE_MOTOR_ID_1  1   
+#define ROBOSTRIDE_MOTOR_ID_1  1
 #define ROBOSTRIDE_MOTOR_ID_2  2
 #define ROBOSTRIDE_MOTOR_ID_3  127
 
@@ -77,8 +77,8 @@ typedef struct {
 #define RS_PARAM_LIMIT_CUR   0x7018u     // 電流制限のパラメータ番号
 #define RS_PARAM_ACC_RAD     0x7022u     // 加速度制限のパラメータ番号
 #define RS_PARAM_SPD_REF     0x700Au     // 目標速度のパラメータ番号
-#define RS_PARAM_LOC_REF    0x7016u      // 目標位置
-#define RS_PARAM_LIMIT_SPD  0x7017u      // 位置制御中の最大速度制限
+#define RS_PARAM_LOC_REF     0x7016u     // 目標位置
+#define RS_PARAM_LIMIT_SPD   0x7017u     // 位置制御中の最大速度制限
  
 #define MAX_WHEEL_RPM 5000.0f            // 輪駆動モーターに送る回転速度指令の上限を5000 rpmに設定 
 
@@ -261,11 +261,7 @@ static int swerve_send_drive(int run)
             return 0;
         }
 
-        if (send_motor_cmd(
-                i,
-                (run && home_done[i] && control_mode[i] == 1) ? wheel_speed_target[i] : 0.0f,
-                goal_pid_mode,
-                goal_control_motor_mode) != HAL_OK) {
+        if (send_motor_cmd(i, (run && home_done[i] && control_mode[i] == 1) ? wheel_speed_target[i] : 0.0f,goal_pid_mode, goal_control_motor_mode) != HAL_OK) {
             return 0;
         }
 
@@ -277,7 +273,7 @@ static int swerve_send_drive(int run)
     return 1;
 }
 
-/* 3輪の操舵角度と駆動速度を管理する関数 */
+/* 3輪の向きを調整し、走行してよいか判断して、モーターへ指令を送る関数 */
 static void swerve_task(void) {
     /* TIM6からの更新要求を取り出す */
     uint32_t request_mask = __get_PRIMASK();
@@ -386,7 +382,7 @@ static void compute_wheel_targets(float vx, float vy, float omega)
         int found = 0;                         // 範囲内の操舵角を見つけたか記録
 
         /* 同じ走行方向を実現できる角度から、制限内で現在位置に最も近いものを選ぶ */
-        for (int k = -2; k <= 2; ++k) {
+        for (int k = -1; k <= 1; ++k) {
             float candidate = heading + (float)k * (float)M_PI;  // 元の方向に、180°ずつ足し引きした操舵角を作成
 
             if (fabsf(candidate) > STEER_LIMIT_RAD) {            // 候補の角度が、設定した上限を超えていないか確認
@@ -445,7 +441,7 @@ static int home_send_ok(HAL_StatusTypeDef status)
     return (hfdcan3.Instance->PSR & FDCAN_PSR_BO) == 0U;  // FDCAN3がBus-Off状態でなければ 1 を返し、Bus-Offなら 0
 }
 
-
+/* 独立ステアリングの操舵モーターを原点復帰 */
 static int home_one_motor(uint8_t i)
 {
     uint8_t id = robostride_motor_id[i];
@@ -512,8 +508,7 @@ static int home_one_motor(uint8_t i)
     }
 
     /* 0を検出したら速度指令を0にする */
-    if (!home_send_ok(robostride_write_float(
-            id, RS_PARAM_SPD_REF, 0.0f))) {
+    if (!home_send_ok(robostride_write_float(id, RS_PARAM_SPD_REF, 0.0f))) {
         return 0;
     }
 
@@ -584,12 +579,13 @@ static int home_one_motor(uint8_t i)
     return 1;
 }
 
+/* RoboStrideモーターにCAN通信でパラメータの読み取り要求を送り、返ってきた値を取得する関数 */
 static int home_read_param(uint8_t id, uint16_t index, void *value, uint8_t size)
 {
     FDCAN_RxHeaderTypeDef rx;
     uint8_t data[64];
 
-    /* 古い応答を捨てる */
+    /* 古い受信データを削除する */
     while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan3, FDCAN_RX_FIFO0) > 0U) {  // 受信FIFOに何件のメッセージが保存されているかを調べる
         if (HAL_FDCAN_GetRxMessage(&hfdcan3, FDCAN_RX_FIFO0, &rx, data) != HAL_OK) {
             return 0;
@@ -1230,8 +1226,7 @@ int main(void)
   for (uint8_t i = 0; i < 3; i++) {
     uint8_t stop_data[8] = {0};
 
-    robostride_send(RS_TYPE_STOP, ROBOSTRIDE_HOST_ID,
-                    robostride_motor_id[i], stop_data);
+    robostride_send(RS_TYPE_STOP, ROBOSTRIDE_HOST_ID, robostride_motor_id[i], stop_data);
     HAL_Delay(10);
   }
 
