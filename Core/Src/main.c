@@ -242,7 +242,7 @@ static int can3_wait_idle(void)
     uint32_t started = HAL_GetTick();                    // 開始時刻を取得
 
     while (hfdcan3.Instance->TXBRP != 0U) {              // CANの送信要求が残っているか確認 TXBRPはFDCANの送信要求保留レジスタで送信要求が保留されていると、対応するビットが1
-        if ((hfdcan3.Instance->PSR & FDCAN_PSR_BO) ||    // FDCAN_PSR_BO は、Bus-Off状態を表すビットのマスク
+        if ((hfdcan3.Instance->PSRvbbb & FDCAN_PSR_BO) ||    // FDCAN_PSR_BO は、Bus-Off状態を表すビットのマスク
             HAL_GetTick() - started >= 10U) {            // 10ms以上経過したか
             return 0;   
         }
@@ -334,8 +334,8 @@ static void swerve_task(void) {
     for (uint8_t i = 0; i < 3; ++i) {
         float error = (robostride_pos_ref[i] - steer_measured[i]) / (steer_sign[i] * steer_ratio[i]);
 
-        if (fabsf(error) > SWERVE_ALIGN_RAD) {
-            aligned = 0;
+        if (fabsf(error) > SWERVE_ALIGN_RAD) {  
+            aligned = 0;         //誤差が10度を超えると3つのモーターを0にする
         }
 
         /* 操舵位置を送信 */
@@ -375,7 +375,7 @@ static void compute_wheel_targets(float vx, float vy, float omega)
 
         /* 原点基準の現在の車輪角度 */
         float current = (steer_measured[i] - home_position[i]) / (steer_sign[i] * steer_ratio[i]);  // 現在の車輪の向きを、原点基準の角度(rad)に
-        float heading = atan2f(uy, ux);        // y座標とx座標から角度を求める関数
+        float heading = atan2f(uy, ux);        // y座標とx座標から角度を求める関数 +-180°
         float best_angle = 0.0f;               // 最終的に選ぶ車輪の向きを保存
         float best_distance = INFINITY;        // 現在位置からの最短移動量を保存
         float best_sign = 1.0f;                // 駆動方向の補正を保存
