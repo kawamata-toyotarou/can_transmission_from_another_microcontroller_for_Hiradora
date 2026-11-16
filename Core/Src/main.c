@@ -81,6 +81,8 @@ typedef struct {
 #define RS_PARAM_LIMIT_SPD   0x7017u     // 位置制御中の最大速度制限
  
 #define MAX_WHEEL_RPM 5000.0f            // 輪駆動モーターに送る回転速度指令の上限を5000 rpmに設定 
+#define MAX_BODY_SPEED_M_S    4.0f
+#define MAX_BODY_OMEGA_RAD_S  6.0f
 
 #define RS_ID_SCAN_ONLY  0               // 1: ID確認、0: 通常動作
 
@@ -242,7 +244,7 @@ static int can3_wait_idle(void)
     uint32_t started = HAL_GetTick();                    // 開始時刻を取得
 
     while (hfdcan3.Instance->TXBRP != 0U) {              // CANの送信要求が残っているか確認 TXBRPはFDCANの送信要求保留レジスタで送信要求が保留されていると、対応するビットが1
-        if ((hfdcan3.Instance->PSRvbbb & FDCAN_PSR_BO) ||    // FDCAN_PSR_BO は、Bus-Off状態を表すビットのマスク
+        if ((hfdcan3.Instance->PSR & FDCAN_PSR_BO) ||    // FDCAN_PSR_BO は、Bus-Off状態を表すビットのマスク
             HAL_GetTick() - started >= 10U) {            // 10ms以上経過したか
             return 0;   
         }
@@ -320,6 +322,11 @@ static void swerve_task(void) {
 
     int fresh = count != 0U && HAL_GetTick() - stamp < SWERVE_CMD_TIMEOUT_MS && isfinite(vx) && isfinite(vy) && isfinite(omega);
 
+    float previous_pos_ref[3];
+    for (uint8_t i = 0; i < 3; ++i) {
+        previous_pos_ref[i] = robostride_pos_ref[i];
+    }
+
     if (fresh) {
         /* 元のプログラムの受信軸の対応を維持 */
         compute_wheel_targets(vy, -vx, omega);
@@ -327,6 +334,19 @@ static void swerve_task(void) {
     else {
         /* 通信指令が途絶えたら走行速度を0にする */
         compute_wheel_targets(0.0f, 0.0f, 0.0f);
+    }
+
+    for (uint8_t i = 0; i < 3; ++i) {
+        if (!isfinite(robostride_pos_ref[i]) ||
+            !isfinite(wheel_speed_target[i]) ||
+            fabsf(wheel_speed_target[i]) > MAX_WHEEL_RPM) {
+            for (uint8_t j = 0; j < 3; ++j) {
+                robostride_pos_ref[j] = previous_pos_ref[j];
+                wheel_speed_target[j] = 0.0f;
+            }
+            (void)swerve_send_drive(0);
+            return;
+        }
     }
 
     int aligned = 1;
@@ -894,6 +914,7 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 
     if (RxHeader.IdType != FDCAN_STANDARD_ID) return;
     if (RxHeader.Identifier != CAN_VELOCITY_CMD_ID) return;
+    if (RxHeader.RxFrameType != FDCAN_DATA_FRAME) return;
     if (RxHeader.FDFormat != FDCAN_FD_CAN || RxHeader.BitRateSwitch != FDCAN_BRS_ON || RxHeader.DataLength != FDCAN_DLC_BYTES_12)
     {
       return;
@@ -903,6 +924,12 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
     cmd.vx    = be_bytes_to_float(&RxData[0]);
     cmd.vy    = be_bytes_to_float(&RxData[4]);
     cmd.omega = be_bytes_to_float(&RxData[8]);
+
+    if (!isfinite(cmd.vx) || !isfinite(cmd.vy) || !isfinite(cmd.omega) ||
+        hypotf(cmd.vx, cmd.vy) > MAX_BODY_SPEED_M_S ||
+        fabsf(cmd.omega) > MAX_BODY_OMEGA_RAD_S) {
+        return;
+    }
 
     rx_vx    = cmd.vx;      
     rx_vy    = cmd.vy;
