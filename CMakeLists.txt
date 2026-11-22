@@ -44,7 +44,10 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    Core/Src/drive_can.c
+    Core/Src/robostride_can.c
+    Core/Src/swerve.c
+    Core/Src/swerve_homing.c
 )
 
 # Add include paths
