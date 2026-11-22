@@ -5,10 +5,10 @@
 extern FDCAN_HandleTypeDef hfdcan1;
 extern FDCAN_HandleTypeDef hfdcan3;
 
-#define CAN_WHEEL_CMD_ID  0x110u
+#define CAN_VELOCITY_CMD_ID 0x100u
 #define CAN_MOTOR_CMD_BASE_ID 0x301u
-/* 正規化した角度は±π。送信元は6要素を1つのCAN FDフレームにする。 */
-#define COMMAND_MAX_STEER_RAD 3.14159265359f
+#define MAX_BODY_SPEED_M_S 4.0f
+#define MAX_BODY_OMEGA_RAD_S 6.0f
 
 typedef struct __attribute__((packed)) {
     float   speed_target;                 /* byte0-3: N5065軸rpm、float32リトルエンディアン */
@@ -47,8 +47,8 @@ void drive_can_start(void)
     sFilterConfig.FilterIndex  = 0;
     sFilterConfig.FilterType   = FDCAN_FILTER_DUAL;
     sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-    sFilterConfig.FilterID1    = CAN_WHEEL_CMD_ID;
-    sFilterConfig.FilterID2    = CAN_WHEEL_CMD_ID;
+    sFilterConfig.FilterID1    = CAN_VELOCITY_CMD_ID;
+    sFilterConfig.FilterID2    = CAN_VELOCITY_CMD_ID;
     if (HAL_FDCAN_ConfigFilter(&hfdcan1, &sFilterConfig) != HAL_OK)
     {
         Error_Handler();
@@ -73,35 +73,31 @@ void drive_can_start(void)
 
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t events)
 {
+    /* FDCAN1の新着受信か確認 */
     if (hfdcan->Instance != FDCAN1 || (events & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) == 0U) {
         return;
     }
 
     FDCAN_RxHeaderTypeDef header;
     uint8_t data[64];  /* HALはヘッダーのDLCに従い、最大64バイトを書き込む。 */
-    if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &header, data) != HAL_OK ||
-        header.Identifier != CAN_WHEEL_CMD_ID || header.IdType != FDCAN_STANDARD_ID ||
-        header.RxFrameType != FDCAN_DATA_FRAME || header.FDFormat != FDCAN_FD_CAN ||
-        header.BitRateSwitch != FDCAN_BRS_ON || header.DataLength != FDCAN_DLC_BYTES_24) {
+
+    /* フレームを1件取り出し、車体速度指令の形式を確認する。 */
+    if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &header, data) != HAL_OK || header.Identifier != CAN_VELOCITY_CMD_ID || header.IdType != FDCAN_STANDARD_ID || header.RxFrameType != FDCAN_DATA_FRAME || header.FDFormat != FDCAN_FD_CAN || header.BitRateSwitch != FDCAN_BRS_ON || header.DataLength != FDCAN_DLC_BYTES_12) {
         return;
     }
 
-    /* 8バイトごとに車輪側角度[rad]、N5065軸速度[rpm]。どちらもBE float32。 */
-    WheelCommand wheels[SWERVE_WHEEL_COUNT];
-    for (uint8_t wheel = 0; wheel < SWERVE_WHEEL_COUNT; ++wheel) {
-        const float steer_rad = be_bytes_to_float(&data[8U * wheel]);
-        const float motor_rpm = be_bytes_to_float(&data[8U * wheel + 4U]);
-        if (!isfinite(steer_rad) || fabsf(steer_rad) > COMMAND_MAX_STEER_RAD ||
-            !isfinite(motor_rpm) || fabsf(motor_rpm) > DRIVE_MOTOR_MAX_RPM) {
-            return;
-        }
-        wheels[wheel] = (WheelCommand){steer_rad, motor_rpm};
+    /* 4バイトずつ、vx [m/s]、vy [m/s]、omega [rad/s]。すべてBE float32。 */
+    const float vx_m_s = be_bytes_to_float(&data[0]);
+    const float vy_m_s = be_bytes_to_float(&data[4]);
+    const float omega_rad_s = be_bytes_to_float(&data[8]);
+    if (!isfinite(vx_m_s) || !isfinite(vy_m_s) || !isfinite(omega_rad_s) || hypotf(vx_m_s, vy_m_s) > MAX_BODY_SPEED_M_S || fabsf(omega_rad_s) > MAX_BODY_OMEGA_RAD_S) {
+        return;
     }
 
-    /* 全輪が正常な場合だけ、1フレーム分の指令と受信時刻を更新する。 */
-    for (uint8_t wheel = 0; wheel < SWERVE_WHEEL_COUNT; ++wheel) {
-        latest_command.wheels[wheel] = wheels[wheel];
-    }
+    /* 正常な指令だけを保存し、受信時刻を更新する。 */
+    latest_command.vx_m_s = vx_m_s;
+    latest_command.vy_m_s = vy_m_s;
+    latest_command.omega_rad_s = omega_rad_s;
     latest_command.rx_ms = HAL_GetTick();
     latest_command.count++;
 }

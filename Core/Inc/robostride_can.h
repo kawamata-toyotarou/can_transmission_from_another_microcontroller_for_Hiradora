@@ -4,13 +4,13 @@
 #include <stdbool.h>
 #include "main.h"
 
-#define RS_PARAM_RUN_MODE   0x7005u
-#define RS_PARAM_SPD_REF    0x700Au
-#define RS_PARAM_LOC_REF    0x7016u
-#define RS_PARAM_LIMIT_SPD  0x7017u
-#define RS_PARAM_LIMIT_CUR  0x7018u
-#define RS_PARAM_MECH_POS   0x7019u
-#define RS_PARAM_MECH_SPEED 0x701Bu
+#define RS_PARAM_RUN_MODE   0x7005u  // 制御モード。2 = 速度制御、5 = 位置制御（CSP）
+#define RS_PARAM_SPD_REF    0x700Au  // 目標速度 [rad/s]。原点探索で回す速度を指定する
+#define RS_PARAM_LOC_REF    0x7016u  // 目標角度 [rad]。位置制御で出力軸を動かす先を指定する
+#define RS_PARAM_LIMIT_SPD  0x7017u  // 位置制御中の速度上限 [rad/s]。目標角度へ動く速さを制限する
+#define RS_PARAM_LIMIT_CUR  0x7018u  // 電流上限 [A]。原点探索中などに出せるトルクを抑える
+#define RS_PARAM_MECH_POS   0x7019u  // 実測の多回転角度 [rad]。探索中の移動量と原点位置を確認する
+#define RS_PARAM_MECH_SPEED 0x701Bu  // 実測の角速度 [rad/s]。速度0の指令後に停止を確認する
 
 #define STEER_FEEDBACK_TIMEOUT_MS 60U
 

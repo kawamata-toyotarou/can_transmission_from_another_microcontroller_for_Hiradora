@@ -80,7 +80,7 @@ bool robostride_wait_idle(void)
 HAL_StatusTypeDef robostride_enable(uint8_t motor_id)
 {
     uint8_t data[8] = {0};
-    return robostride_send(RS_TYPE_ENABLE, ROBOSTRIDE_HOST_ID, motor_id, data);
+    return robostride_send(RS_TYPE_ENABLE, ROBOSTRIDE_HOST_ID, motor_id, data); // type = 0x03 は、RobStrideにモーターを有効にしてと送るEnable指令
 }
 
 /*モーターを停止させる関数 */
@@ -158,59 +158,56 @@ HAL_StatusTypeDef robostride_write_u8(uint8_t motor_id, uint16_t index, uint8_t 
 static HAL_StatusTypeDef request_parameter(uint8_t id, uint16_t index)
 {
     uint8_t request[8] = {0};
-    put_u16_le(request, index);
-    return robostride_send(RS_TYPE_READ_PARAM, ROBOSTRIDE_HOST_ID, id, request);
+    put_u16_le(request, index);  // 16ビットの index を2バイトに分け、下位バイトから request[0] と request[1] に書き込み
+    return robostride_send(RS_TYPE_READ_PARAM, ROBOSTRIDE_HOST_ID, id, request); // RS_TYPE_READ_PARAM はパラメータを読み出してという命令の種類
 }
 
-/* 原点復帰と通常走行で共用するFIFO0の受信処理。IDスキャンは別の起動モード。 */
+/* 原点復帰と通常走行で共用するFIFO0の受信処理。FDCAN3に届いたRobStrideの返信を取り出し、どの車輪の何の返信かを判定する */
 void robostride_receive(void)
 {
     FDCAN_RxHeaderTypeDef rx;
     uint8_t data[64];
-
+    /* RX FIFO0 にフレームがある間、`HAL_FDCAN_GetRxMessage()` で1件ずつ取り出す。n < 8U の8はフレーム数。1回の呼び出しで最大8件だけ処理し、残りは次回に回すことで、ほかの処理にも時間を使える */
     for (uint8_t n = 0; n < 8U && HAL_FDCAN_GetRxFifoFillLevel(&hfdcan3, FDCAN_RX_FIFO0); ++n) {
         if (HAL_FDCAN_GetRxMessage(&hfdcan3, FDCAN_RX_FIFO0, &rx, data) != HAL_OK) {
             return;
         }
-        if (rx.IdType != FDCAN_EXTENDED_ID || rx.FDFormat != FDCAN_CLASSIC_CAN ||
-            rx.RxFrameType != FDCAN_DATA_FRAME || rx.DataLength != FDCAN_DLC_BYTES_8 ||
-            (rx.Identifier & 0xFFU) != ROBOSTRIDE_HOST_ID) {
+        /* 拡張ID・Classic CAN・データフレーム・8バイト・宛先が 0xFD のすべてを確認 */
+        if (rx.IdType != FDCAN_EXTENDED_ID || rx.FDFormat != FDCAN_CLASSIC_CAN || rx.RxFrameType != FDCAN_DATA_FRAME || rx.DataLength != FDCAN_DLC_BYTES_8 || (rx.Identifier & 0xFFU) != ROBOSTRIDE_HOST_ID) {
             continue;
         }
 
         uint8_t type = (rx.Identifier >> 24) & 0x1FU;
         uint8_t id = (rx.Identifier >> 8) & 0xFFU;
         for (uint8_t i = 0; i < SWERVE_WHEEL_COUNT; ++i) {
+            /* 受信したidが正しくない時はスキップ*/
             if (id != swerve_modules[i].steer_id) {
                 continue;
             }
 
-            SteeringAxis *axis = &steering[i];
-            SteeringFeedback *feedback = &axis->feedback;
-            if (type == 2U || type == 24U || type == 21U) {
-                uint32_t fault = type == 21U ?
-                    (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
-                    ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24) :
-                    (rx.Identifier >> 16) & 0x3FU;
-                if (fault || (axis->homed && type != 21U &&
-                              ((rx.Identifier >> 22) & 3U) != 2U)) {
+            SteeringAxis *axis = &steering[i];              // axisはその車輪の管理情報
+            SteeringFeedback *feedback = &axis->feedback;   // feedbackはその中の角度や故障の情報
+            if (type == 2U || type == 24U || type == 21U) { // type が 2、24、21 のとき、このコードは故障情報を確認する
+                uint32_t fault = type == 21U ? (uint32_t)data[0] | ((uint32_t)data[1] << 8) | ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24) : (rx.Identifier >> 16) & 0x3FU;
+                if (fault || (axis->homed && type != 21U && ((rx.Identifier >> 22) & 3U) != 2U)) { // fault が0以外なら、故障情報がある 原点復帰済みで、運転状態を持つタイプ2・24の返信を見たとき、CAN IDのbit 23〜22が 2（運転状態）以外なら、操舵に使えないと判断
                     feedback->fault = 1;
                     feedback->valid = 0;
                 }
                 break;
             }
-            if (type != RS_TYPE_READ_PARAM) {
+            if (type != RS_TYPE_READ_PARAM) {  // RS_TYPE_READ_PARAM（0x11）なら、パラメータ読み出しの返信として処理
                 break;
             }
 
-            uint16_t index = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
-            uint8_t ok = ((rx.Identifier >> 16) & 0xFFU) == 0U;
-            if (home_reply.waiting && !home_reply.received &&
-                home_reply.id == id && home_reply.index == index) {
+            uint16_t index = (uint16_t)data[0] | ((uint16_t)data[1] << 8); // index はどの項目の返信か 例えば data[0] = 0x19、`data[1] = 0x70` なら、`0x19 | (0x70 << 8)` で 0x7019（現在角度）になる
+            uint8_t ok = ((rx.Identifier >> 16) & 0xFFU) == 0U;            // ok は読み出しの結果 CAN IDのbit 23〜16を取り出し、この値が 0 なら ok = 1
+            /* 待機中で、まだ返信を保存しておらず、モーターIDと項目番号が両方一致する場合だけ、data[4]〜data[7]の4バイトを home_reply.data にコピー */
+            if (home_reply.waiting && !home_reply.received && home_reply.id == id && home_reply.index == index) {
                 memcpy(home_reply.data, &data[4], sizeof(home_reply.data));
                 home_reply.ok = ok;
                 home_reply.received = 1;
             }
+            /* 通常走行中なら、最新の操舵角を更新する */
             if (index == RS_PARAM_MECH_POS && axis->pending) {
                 float angle;
                 uint32_t now = HAL_GetTick();
@@ -254,13 +251,16 @@ bool robostride_read_parameter(uint8_t id, uint16_t index, void *value, uint8_t 
         }
     }
     home_reply.waiting = 0;
+    /* 返信の結果がエラーだった場合 */
     if (!home_reply.received || !home_reply.ok) {
         return false;
     }
+    /* memcpy(コピー先, コピー元, バイト数); */
     memcpy(value, home_reply.data, size);
     return true;
 }
 
+/* 車輪に保存してある角度、受信時刻、有効フラグ、故障フラグ */
 const SteeringFeedback *robostride_feedback(uint8_t wheel)
 {
     return &steering[wheel].feedback;
@@ -395,7 +395,7 @@ void robostride_can_start(void)
     }
 
     /* HAL_FDCAN_Start() でFDCAN3が送受信 CAN3_DiagEnable() でBus-Offなどのエラー通知を有効に*/
-    if (HAL_FDCAN_Start(&hfdcan3) != HAL_OK || CAN3_DiagEnable() != HAL_OK) {
+    if (HAL_FDCAN_Start(&hfdcan3) != HAL_OK || CAN3_DiagEnable() != HAL_OK) {  // CAN3_DiagEnableでHAL_FDCAN_RxFifo0Callback
         Error_Handler();
     }
 }

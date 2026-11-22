@@ -22,22 +22,21 @@ static bool home_read_param(uint8_t id, uint16_t index, void *value, uint8_t siz
     return robostride_read_parameter(id, index, value, size, 200U);
 }
 
-static bool home_seek(uint8_t i, float start_angle, uint32_t started,
-                     GPIO_PinState end_state, float speed, float wheel_limit)
+static bool home_seek(uint8_t i, float start_angle, uint32_t started, GPIO_PinState end_state, float speed, float wheel_limit)
 {
-    const SwerveModule *module = &swerve_modules[i];
-    uint8_t id = module->steer_id;
+    const SwerveModule *module = &swerve_modules[i]; // module は対象の車輪の設定
+    uint8_t id = module->steer_id;                   // RobStrideのCAN IDを取得
     if (!home_send_ok(robostride_write_float(id, RS_PARAM_SPD_REF, speed))) {
         return false;
     }
 
-    while (HAL_GetTick() - started < HOME_TIMEOUT_MS) {
+    while (HAL_GetTick() - started < HOME_TIMEOUT_MS) { // 45秒未満の間、探索
         float angle;
-        if (!robostride_read_parameter(id, RS_PARAM_MECH_POS, &angle, sizeof(angle), 40U) ||
-            !isfinite(angle) || robostride_feedback(i)->fault ||
-            fabsf(angle - start_angle) >= wheel_limit * module->steer_ratio) {
+        /* 現在角度が読めなかった時 か回転量が370度を超えた時 */
+        if (!robostride_read_parameter(id, RS_PARAM_MECH_POS, &angle, sizeof(angle), 40U) || !isfinite(angle) || robostride_feedback(i)->fault || fabsf(angle - start_angle) >= wheel_limit * module->steer_ratio) {
             break;
         }
+        /* センサーが反応したら、速度0を送る */
         if (HAL_GPIO_ReadPin(GPIOC, module->home_pin) == end_state) {
             return home_send_ok(robostride_write_float(id, RS_PARAM_SPD_REF, 0.0f));
         }
@@ -64,7 +63,7 @@ static bool home_one_motor(uint8_t i, float *home_position)
         return false;
     }
 
-    if (!home_send_ok(robostride_enable(id))) return false;
+    if (!home_send_ok(robostride_enable(id))) return false;  // ロボストライドの起動がうまくいかなかった時
 
     printf("HOME START id=%u\r\n", (unsigned int)id);
     fflush(stdout);
@@ -77,14 +76,11 @@ static bool home_one_motor(uint8_t i, float *home_position)
 
     uint32_t started = HAL_GetTick();
     /* LOWで起動した場合は逆方向へ少し動かし、HIGHへ戻ることを確かめる。 */
-    if (HAL_GPIO_ReadPin(GPIOC, swerve_modules[i].home_pin) == GPIO_PIN_RESET &&
-        !home_seek(i, start_angle, started, GPIO_PIN_SET,
-                   -0.5f * swerve_modules[i].home_speed_rad_s, swerve_modules[i].home_release_rad)) {
+    if (HAL_GPIO_ReadPin(GPIOC, swerve_modules[i].home_pin) == GPIO_PIN_RESET && !home_seek(i, start_angle, started, GPIO_PIN_SET, -0.5f * swerve_modules[i].home_speed_rad_s, swerve_modules[i].home_release_rad)) {
         return false;
     }
 
-    if (!home_seek(i, start_angle, started, GPIO_PIN_RESET,
-                   swerve_modules[i].home_speed_rad_s, swerve_modules[i].home_travel_rad)) {
+    if (!home_seek(i, start_angle, started, GPIO_PIN_RESET, swerve_modules[i].home_speed_rad_s, swerve_modules[i].home_travel_rad)) {
         return false;
     }
 
@@ -95,40 +91,36 @@ static bool home_one_motor(uint8_t i, float *home_position)
 
     /* 停止指令直後の角度を記録 */
     float detected_angle;
-    if (!home_read_param(id, RS_PARAM_MECH_POS, &detected_angle, sizeof(detected_angle)) ||
-        !isfinite(detected_angle)) {
+    if (!home_read_param(id, RS_PARAM_MECH_POS, &detected_angle, sizeof(detected_angle)) || !isfinite(detected_angle)) {
       return false;
     }
 
     /* 速度が落ち着くまで待つ */
-    uint32_t settling = HAL_GetTick();
-    uint8_t still_count = 0;
-
+    uint32_t settling = HAL_GetTick(); // settling に停止確認を始めた時刻
+    uint8_t still_count = 0;           // still_countは十分遅いという判定が何回連続
     while (still_count < 3) {
         float speed;
-
         if (HAL_GetTick() - settling >= 1000U || !home_read_param(id, RS_PARAM_MECH_SPEED, &speed, sizeof(speed)) || !isfinite(speed)) {
             return false;
         }
-
-        still_count = fabsf(speed) < 0.03f ? (uint8_t)(still_count + 1) : 0;
-
+        still_count = fabsf(speed) < 0.03f ? (uint8_t)(still_count + 1) : 0; // 実測速度の絶対値が 0.03 rad/s 未満なら、カウントを1増やす。しきい値以上なら、カウントを0に戻す。
         HAL_Delay(20);
     }
 
-
+    /* 正しく停止したら、止める*/
     if (!home_send_ok(robostride_stop(id, false))) {
         return false;
     }
 
-    /* 現在の多回転角度を読み取って保存 */
-    if (!home_read_param(id, RS_PARAM_MECH_POS, home_position, sizeof(*home_position)) ||
-        !isfinite(*home_position)) {
+    /* 停止後現在の多回転角度を読み取って保存 */
+    if (!home_read_param(id, RS_PARAM_MECH_POS, home_position, sizeof(*home_position)) || !isfinite(*home_position)) {
         return false;
     }
 
+    /* センサー検出後に最初に読んだ角度 detected_angle と、最終的に止まった角度 *home_position を比べる */
     float position_error = fabsf(*home_position - detected_angle);
 
+    /* 停止前と停止後の角度の差が大きすぎたらアウト */
     if (position_error > HOME_POSITION_TOLERANCE_RAD) {
       printf("HOME FAILED: stop movement too large id=%u\r\n", (unsigned int)id);
       fflush(stdout);
@@ -136,14 +128,14 @@ static bool home_one_motor(uint8_t i, float *home_position)
     }
 
     /* 位置モードへ。目標は0ではなく、いま保存した角度 */
-    if (!home_send_ok(robostride_write_u8(id, RS_PARAM_RUN_MODE, 5)) ||
-        !home_send_ok(robostride_write_float(id, RS_PARAM_LIMIT_SPD, 15.0f)) ||
-        !home_send_ok(robostride_write_float(id, RS_PARAM_LOC_REF, *home_position))) {
+    if (!home_send_ok(robostride_write_u8(id, RS_PARAM_RUN_MODE, 5)) ||                // 制御モードに 5 を書き、位置制御（CSP）を選ぶ
+        !home_send_ok(robostride_write_float(id, RS_PARAM_LIMIT_SPD, 15.0f)) ||        // 位置制御で目標へ動くときの速度上限を、RobStride出力軸で 15 rad/s にする
+        !home_send_ok(robostride_write_float(id, RS_PARAM_LOC_REF, *home_position))) { // 原点で停止したときに記録した角度を、位置制御の目標にする
         return false;
     }
 
-    if (!home_read_param(id, RS_PARAM_RUN_MODE, &mode, 1) ||
-        mode != 5) {
+    /* RobStrideが実際に 5 を返したことを確認 */
+    if (!home_read_param(id, RS_PARAM_RUN_MODE, &mode, 1) || mode != 5) {
         return false;
     }
 
@@ -155,7 +147,7 @@ static bool home_one_motor(uint8_t i, float *home_position)
     if (robostride_feedback(i)->fault) {
         return false;
     }
-    robostride_set_homed(i);
+    robostride_set_homed(i);             // 指定した車輪の原点復帰が完了したことを、STM32の内部に記録する関数
 
     return true;
 }
