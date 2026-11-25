@@ -135,12 +135,12 @@ HAL_StatusTypeDef robostride_write_float(uint8_t motor_id, uint16_t index, float
 {
     uint8_t data[8] = {0};
 
-    put_u16_le(&data[0], index);
-    put_float_le(&data[4], value);
+    put_u16_le(&data[0], index);  // index は RS_PARAM_RUN_MODE（0x7005）なら、制御モードの項目。value は 2 なら、その項目を速度モードに設定するという意味
+    put_float_le(&data[4], value);// 制御モードを書き込むときは、data[0] と data[1] に項目番号、data[4]に設定したいモードを入れる
 
     rs_last_param_index = index;
 
-    return robostride_send(RS_TYPE_WRITE_PARAM, ROBOSTRIDE_HOST_ID, motor_id, data);
+    return robostride_send(RS_TYPE_WRITE_PARAM, ROBOSTRIDE_HOST_ID, motor_id, data);  // RS_TYPE_WRITE_PARAMなんで0x12で書き込み 0x11なら読みこみ
 }
 
 /*intデータから送信データを作成し、送信する関数*/
@@ -212,8 +212,7 @@ void robostride_receive(void)
                 float angle;
                 uint32_t now = HAL_GetTick();
                 memcpy(&angle, &data[4], sizeof(angle));
-                feedback->valid = ok && !feedback->fault && isfinite(angle) &&
-                    now - axis->request_ms < STEER_FEEDBACK_TIMEOUT_MS;
+                feedback->valid = ok && !feedback->fault && isfinite(angle) && now - axis->request_ms < STEER_FEEDBACK_TIMEOUT_MS;
                 if (feedback->valid) {
                     feedback->angle_rad = angle;
                     feedback->rx_ms = now;
@@ -395,7 +394,7 @@ void robostride_can_start(void)
     }
 
     /* HAL_FDCAN_Start() でFDCAN3が送受信 CAN3_DiagEnable() でBus-Offなどのエラー通知を有効に*/
-    if (HAL_FDCAN_Start(&hfdcan3) != HAL_OK || CAN3_DiagEnable() != HAL_OK) {  // CAN3_DiagEnableでHAL_FDCAN_RxFifo0Callback
+    if (HAL_FDCAN_Start(&hfdcan3) != HAL_OK || CAN3_DiagEnable() != HAL_OK) {   // 周期処理はrobostride_receiveで行っている
         Error_Handler();
     }
 }

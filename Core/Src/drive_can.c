@@ -26,7 +26,7 @@ DriveCommand drive_can_latest_command(void)
 {
     const uint32_t mask = __get_PRIMASK();
     __disable_irq();
-    const DriveCommand command = latest_command;
+    const DriveCommand command = latest_command; // `latest_commandには vx、vy、omega、受信時刻、受信回数が入っているこの関数ではそれを返す
     __set_PRIMASK(mask);
     return command;
 }

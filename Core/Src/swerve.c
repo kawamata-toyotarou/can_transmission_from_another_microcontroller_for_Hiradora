@@ -13,7 +13,8 @@ extern UART_HandleTypeDef huart2;
 #define RS_ID_SCAN_ONLY 0
 #define SWERVE_PERIOD_MS 20U
 #define SWERVE_CMD_TIMEOUT_MS 300U
-#define SWERVE_ALIGN_RAD 0.174533f  /* 車輪側で10度 */
+#define SWERVE_ALIGN_RAD 0.174533f        /* 初期化時車輪側で許容誤差10度 */
+#define SWERVE_DRIVE_ALIGN_RAD 0.349066f  /* 走行時車輪側で許容誤差20度 */
 #define SWERVE_STEER_RATIO 3.0f
 /* 原点探索の上限はRobStride出力軸で370°。設定欄には車輪側の角度で渡す。 */
 #define HOME_TRAVEL_ROBOSTRIDE_RAD (370.0f * (float)M_PI / 180.0f)
@@ -127,15 +128,16 @@ static void begin_cycle(void)
         tx_delay++;
     }
     /* 操舵と駆動を禁止にして、指令とセンサーを確認 */
-    period_ms = now - previous_cycle_ms;
+    period_ms = now - previous_cycle_ms;    // 前回から何ms経ったか記録
+    /* 今回の送信を最初から準備 */
     previous_cycle_ms = now;
     tx_cycle.step = DRIVE_TX_START;
     tx_cycle.queue_blocked = false;
     tx_cycle.command_rx_ms = command.rx_ms;
     tx_cycle.steer_allowed = false;
     tx_cycle.drive_allowed = false;
-    if (command.count == 0U || !command_fresh(now, command.rx_ms) ||
-        !steering_ready(now)) {
+
+    if (command.count == 0U || !command_fresh(now, command.rx_ms) || !steering_ready(now)) {
         return;
     }
 
@@ -149,8 +151,7 @@ static void begin_cycle(void)
     const float vx_m_s = command.vy_m_s;
     const float vy_m_s = -command.vx_m_s;
     for (uint8_t i = 0; i < SWERVE_WHEEL_COUNT; ++i) {
-        if (!select_wheel_target(i, vx_m_s, vy_m_s, command.omega_rad_s,
-                                 &angles[i], &rpm[i]) || !isfinite(rpm[i])) {
+        if (!select_wheel_target(i, vx_m_s, vy_m_s, command.omega_rad_s, &angles[i], &rpm[i]) || !isfinite(rpm[i])) {
             return;
         }
         const float error = fabsf(angles[i] - robostride_feedback(i)->angle_rad) /
@@ -158,7 +159,7 @@ static void begin_cycle(void)
         if (!isfinite(error)) {
             return;
         }
-        if (error > SWERVE_ALIGN_RAD) {
+        if (error > SWERVE_DRIVE_ALIGN_RAD) {
             aligned = false;
         }
         largest_rpm = fmaxf(largest_rpm, fabsf(rpm[i]));
@@ -320,7 +321,7 @@ void swerve_start(void)
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-    if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK) {
+    if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK) {  // HAL_TIM_PeriodElapsedCallbackを呼ぶ
         Error_Handler();
     }
 }

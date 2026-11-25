@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include "main.h"
 
+/* robostride_receive()が返信の data[4]〜data[7]から値を取り出し */
 #define RS_PARAM_RUN_MODE   0x7005u  // 制御モード。2 = 速度制御、5 = 位置制御（CSP）
 #define RS_PARAM_SPD_REF    0x700Au  // 目標速度 [rad/s]。原点探索で回す速度を指定する
 #define RS_PARAM_LOC_REF    0x7016u  // 目標角度 [rad]。位置制御で出力軸を動かす先を指定する
