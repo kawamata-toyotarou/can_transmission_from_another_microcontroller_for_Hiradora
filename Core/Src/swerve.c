@@ -29,15 +29,15 @@ enum {
 
 /* FDCAN3の駆動ID 0x301 / 0x302 / 0x303 と同じ、右前 / 左前 / 後ろの順。 */
 const SwerveModule swerve_modules[SWERVE_WHEEL_COUNT] = {
-    { .x_m = 0.155f, .y_m = -0.2684679f, .wheel_radius_m = 0.037f, .drive_ratio = 1.0f,
+    { .x_m = 0.155f, .y_m = -0.2684679f, .wheel_radius_m = 0.0321f, .drive_ratio = 1.0f,
       .steer_id = 1, .home_pin = GPIO_PIN_3, .steer_ratio = SWERVE_STEER_RATIO, .steer_sign = 1.0f,
       .drive_sign = -1.0f, .home_speed_rad_s = 1.5f,
       .home_travel_rad = HOME_TRAVEL_WHEEL_RAD, .home_release_rad = SWERVE_ALIGN_RAD },
-    { .x_m = 0.155f, .y_m = 0.2684679f, .wheel_radius_m = 0.037f, .drive_ratio = 1.0f,
+    { .x_m = 0.155f, .y_m = 0.2684679f, .wheel_radius_m = 0.0321f, .drive_ratio = 1.0f,
       .steer_id = 2, .home_pin = GPIO_PIN_0, .steer_ratio = SWERVE_STEER_RATIO, .steer_sign = 1.0f,
       .drive_sign = -1.0f, .home_speed_rad_s = 1.5f,
       .home_travel_rad = HOME_TRAVEL_WHEEL_RAD, .home_release_rad = SWERVE_ALIGN_RAD },
-    { .x_m = -0.310f, .y_m = 0.0f, .wheel_radius_m = 0.037f, .drive_ratio = 1.0f,
+    { .x_m = -0.310f, .y_m = 0.0f, .wheel_radius_m = 0.0321f, .drive_ratio = 1.0f,
       .steer_id = 127, .home_pin = GPIO_PIN_2, .steer_ratio = SWERVE_STEER_RATIO, .steer_sign = 1.0f,
       .drive_sign = -1.0f, .home_speed_rad_s = 1.5f,
       .home_travel_rad = HOME_TRAVEL_WHEEL_RAD, .home_release_rad = SWERVE_ALIGN_RAD }
@@ -166,8 +166,7 @@ static void begin_cycle(void)
     }
 
     /* 平ドラの上限を超えるときは、全輪に同じ倍率を掛けて速度比を保つ。 */
-    const float scale = largest_rpm > DRIVE_MOTOR_MAX_RPM
-        ? DRIVE_MOTOR_MAX_RPM / largest_rpm : 1.0f;
+    const float scale = largest_rpm > DRIVE_MOTOR_MAX_RPM ? DRIVE_MOTOR_MAX_RPM / largest_rpm : 1.0f;
     for (uint8_t i = 0; i < SWERVE_WHEEL_COUNT; ++i) {
         steer_target_rad[i] = angles[i];
         motor_target_rpm[i] = copysignf(fminf(fabsf(rpm[i]) * scale, DRIVE_MOTOR_MAX_RPM), rpm[i]);
