@@ -41,7 +41,7 @@ static bool home_seek(uint8_t i, float start_angle, uint32_t started, GPIO_PinSt
             return home_send_ok(robostride_write_float(id, RS_PARAM_SPD_REF, 0.0f));
         }
     }
-    (void)robostride_stop(id, true);
+    (void)robostride_stop(id, true); // 低電圧エラー解除 true が、停止と同時に故障フラグのクリアを要求 data[0] = 1にすることにより
     return false;
 }
 
@@ -51,7 +51,7 @@ static bool home_one_motor(uint8_t i, float *home_position)
     uint8_t id = swerve_modules[i].steer_id;
     uint8_t mode;
     /* 停止 → 速度モード → 電流制限 → 速度0 */
-    if (!home_send_ok(robostride_stop(id, true)) ||                            
+    if (!home_send_ok(robostride_stop(id, true)) ||                            // 低電圧エラー解除 true が、停止と同時に故障フラグのクリアを要求 data[0] = 1にすることにより                       
         !home_send_ok(robostride_write_u8(id, RS_PARAM_RUN_MODE, 2)) ||       // 2 を書き込み、速度モードを指定
         !home_send_ok(robostride_write_float(id, RS_PARAM_LIMIT_CUR, 3.0f)) ||// 原点探索中のRobStrideの電流制限を3 Aに設定
         !home_send_ok(robostride_write_float(id, RS_PARAM_SPD_REF, 0.0f))) {  // 目標速度を 0 rad/s に設定
@@ -69,8 +69,7 @@ static bool home_one_motor(uint8_t i, float *home_position)
     fflush(stdout);
 
     float start_angle;
-    if (!home_read_param(id, RS_PARAM_MECH_POS, &start_angle, sizeof(start_angle)) ||
-        !isfinite(start_angle) || robostride_feedback(i)->fault) {
+    if (!home_read_param(id, RS_PARAM_MECH_POS, &start_angle, sizeof(start_angle)) || !isfinite(start_angle) || robostride_feedback(i)->fault) {
         return false;
     }
 

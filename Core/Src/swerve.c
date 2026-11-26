@@ -16,8 +16,8 @@ extern UART_HandleTypeDef huart2;
 #define SWERVE_ALIGN_RAD 0.174533f        /* 初期化時車輪側で許容誤差10度 */
 #define SWERVE_DRIVE_ALIGN_RAD 0.349066f  /* 走行時車輪側で許容誤差20度 */
 #define SWERVE_STEER_RATIO 3.0f
-/* 原点探索の上限はRobStride出力軸で370°。設定欄には車輪側の角度で渡す。 */
-#define HOME_TRAVEL_ROBOSTRIDE_RAD (370.0f * (float)M_PI / 180.0f)
+/* 原点探索の上限はRobStride出力軸で370°。設定欄には車輪側の角度で渡す。減速比3 */
+#define HOME_TRAVEL_ROBOSTRIDE_RAD (370.0f * (float)M_PI / 180.0f) * 3.0
 #define HOME_TRAVEL_WHEEL_RAD (HOME_TRAVEL_ROBOSTRIDE_RAD / SWERVE_STEER_RATIO)
 
 enum {
