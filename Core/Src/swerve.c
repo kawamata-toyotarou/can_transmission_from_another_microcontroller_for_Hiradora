@@ -27,18 +27,18 @@ enum {
     TX_STEP_COUNT = 3U * SWERVE_WHEEL_COUNT
 };
 
-/* FDCAN3の駆動ID 0x301 / 0x302 / 0x303 と同じ、右前 / 左前 / 後ろの順。 */
+/* FDCAN3の駆動ID 0x301 / 0x302 / 0x303 と同じ、右前 / 左前 / 後ろの順。 PC3、左前 PC0、後ろ PC2 */
 const SwerveModule swerve_modules[SWERVE_WHEEL_COUNT] = {
     { .x_m = 0.155f, .y_m = -0.2684679f, .wheel_radius_m = 0.0321f, .drive_ratio = 1.0f,
-      .steer_id = 1, .home_pin = GPIO_PIN_3, .steer_ratio = SWERVE_STEER_RATIO, .steer_sign = 1.0f,
+      .steer_id = 127, .home_pin = GPIO_PIN_3, .steer_ratio = SWERVE_STEER_RATIO, .steer_sign = 1.0f,
       .drive_sign = -1.0f, .home_speed_rad_s = 1.5f,
       .home_travel_rad = HOME_TRAVEL_WHEEL_RAD, .home_release_rad = SWERVE_ALIGN_RAD },
     { .x_m = 0.155f, .y_m = 0.2684679f, .wheel_radius_m = 0.0321f, .drive_ratio = 1.0f,
-      .steer_id = 2, .home_pin = GPIO_PIN_0, .steer_ratio = SWERVE_STEER_RATIO, .steer_sign = 1.0f,
+      .steer_id = 1, .home_pin = GPIO_PIN_0, .steer_ratio = SWERVE_STEER_RATIO, .steer_sign = 1.0f,
       .drive_sign = -1.0f, .home_speed_rad_s = 1.5f,
       .home_travel_rad = HOME_TRAVEL_WHEEL_RAD, .home_release_rad = SWERVE_ALIGN_RAD },
     { .x_m = -0.310f, .y_m = 0.0f, .wheel_radius_m = 0.0321f, .drive_ratio = 1.0f,
-      .steer_id = 127, .home_pin = GPIO_PIN_2, .steer_ratio = SWERVE_STEER_RATIO, .steer_sign = 1.0f,
+      .steer_id = 2, .home_pin = GPIO_PIN_2, .steer_ratio = SWERVE_STEER_RATIO, .steer_sign = 1.0f,
       .drive_sign = -1.0f, .home_speed_rad_s = 1.5f,
       .home_travel_rad = HOME_TRAVEL_WHEEL_RAD, .home_release_rad = SWERVE_ALIGN_RAD }
 };
